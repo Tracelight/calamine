@@ -5,6 +5,7 @@
 #![warn(missing_docs)]
 
 mod cells_reader;
+mod comments;
 mod style_parser;
 
 use std::borrow::Cow;
@@ -31,6 +32,10 @@ use crate::{
     SheetType, SheetVisible, Style, Table,
 };
 pub use cells_reader::XlsxCellReader;
+pub use comments::{
+    Comment, LegacyCommentsMap, Person, PersonsMap, RichTextRun, ThreadedComment,
+    ThreadedCommentsMap,
+};
 
 pub(crate) type XlReader<'a, RS> = XmlReader<BufReader<ZipFile<'a, RS>>>;
 
@@ -258,6 +263,12 @@ pub struct Xlsx<RS> {
     pictures: Option<Vec<(String, Vec<u8>)>>,
     /// Merged Regions: Name, Sheet, Merged Dimensions
     merged_regions: Option<Vec<(String, String, Dimensions)>>,
+    /// Legacy comments (authors, comments) by sheet name
+    legacy_comments: Option<LegacyCommentsMap>,
+    /// Threaded comments by sheet name
+    threaded_comments: Option<ThreadedCommentsMap>,
+    /// Person metadata for threaded comments
+    persons: Option<PersonsMap>,
     /// Reader options
     options: XlsxOptions,
 }
@@ -1945,6 +1956,194 @@ impl<RS: Read + Seek> Xlsx<RS> {
     fn pictures(&self) -> Option<Vec<(String, Vec<u8>)>> {
         self.pictures.to_owned()
     }
+
+    /// Get legacy comments for a worksheet
+    pub fn worksheet_comments(&mut self, name: &str) -> Result<&Vec<Comment>, XlsxError> {
+        if self.legacy_comments.is_none() {
+            self.legacy_comments = Some(LegacyCommentsMap::new());
+        }
+
+        let comments_map = self.legacy_comments.as_mut().unwrap();
+
+        if comments_map.contains_key(name) {
+            return Ok(&comments_map.get(name).unwrap().1);
+        }
+
+        let (_, sheet_path) = self
+            .sheets
+            .iter()
+            .find(|&(n, _)| n == name)
+            .ok_or_else(|| XlsxError::WorksheetNotFound(name.into()))?;
+
+        let rels_path = format!(
+            "xl/worksheets/_rels/{}.rels",
+            sheet_path.rsplit('/').next().unwrap_or(sheet_path)
+        );
+
+        let comments_target = {
+            if let Some(rels_xml) = xml_reader(&mut self.zip, &rels_path) {
+                let mut rels_xml = rels_xml?;
+                let mut buf = Vec::with_capacity(128);
+                let mut comments_target: Option<String> = None;
+
+                loop {
+                    buf.clear();
+                    match rels_xml.read_event_into(&mut buf) {
+                        Ok(Event::Start(ref e)) if e.local_name().as_ref() == b"Relationship" => {
+                            let mut target = None;
+                            let mut typ = None;
+                            for a in e.attributes() {
+                                match a.map_err(XlsxError::XmlAttr)? {
+                                    Attribute {
+                                        key: QName(b"Target"),
+                                        value: v,
+                                    } => target = Some(rels_xml.decoder().decode(&v)?.into_owned()),
+                                    Attribute {
+                                        key: QName(b"Type"),
+                                        value: v,
+                                    } => typ = Some(rels_xml.decoder().decode(&v)?.into_owned()),
+                                    _ => (),
+                                }
+                            }
+                            if let (Some(t), Some(type_name)) = (target, typ) {
+                                if type_name == "http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments" {
+                                    let normalized = normalize_relationship_target_from("xl/worksheets", &t);
+                                    comments_target = Some(normalized);
+                                    break;
+                                }
+                            }
+                        }
+                        Ok(Event::Eof) => break,
+                        Err(e) => return Err(XlsxError::Xml(e)),
+                        _ => (),
+                    }
+                }
+
+                comments_target
+            } else {
+                None
+            }
+        };
+
+        if let Some(target) = comments_target {
+            if let Some(comments_xml) = xml_reader(&mut self.zip, &target) {
+                let mut comments_xml = comments_xml?;
+                let (authors, comments) = parse_legacy_comments(&mut comments_xml)?;
+                return Ok(&comments_map
+                    .entry(name.to_string())
+                    .or_insert((authors, comments))
+                    .1);
+            }
+        }
+        Ok(&comments_map
+            .entry(name.to_string())
+            .or_insert((Vec::new(), Vec::new()))
+            .1)
+    }
+
+    /// Get comment authors for a worksheet
+    pub fn comment_authors(&self, name: &str) -> Option<&[String]> {
+        self.legacy_comments
+            .as_ref()
+            .and_then(|map| map.get(name))
+            .map(|(authors, _)| authors.as_slice())
+    }
+
+    /// Get threaded comments for a worksheet
+    pub fn worksheet_threaded_comments(
+        &mut self,
+        name: &str,
+    ) -> Result<&Vec<ThreadedComment>, XlsxError> {
+        if self.threaded_comments.is_none() {
+            self.threaded_comments = Some(ThreadedCommentsMap::new());
+        }
+
+        let comments_map = self.threaded_comments.as_mut().unwrap();
+
+        if comments_map.contains_key(name) {
+            return Ok(comments_map.get(name).unwrap());
+        }
+
+        let (_, sheet_path) = self
+            .sheets
+            .iter()
+            .find(|&(n, _)| n == name)
+            .ok_or_else(|| XlsxError::WorksheetNotFound(name.into()))?;
+
+        let rels_path = format!(
+            "xl/worksheets/_rels/{}.rels",
+            sheet_path.rsplit('/').next().unwrap_or(sheet_path)
+        );
+
+        let threaded_target = {
+            if let Some(rels_xml) = xml_reader(&mut self.zip, &rels_path) {
+                let mut rels_xml = rels_xml?;
+                let mut buf = Vec::with_capacity(128);
+                let mut threaded_target: Option<String> = None;
+
+                loop {
+                    buf.clear();
+                    match rels_xml.read_event_into(&mut buf) {
+                        Ok(Event::Start(ref e)) if e.local_name().as_ref() == b"Relationship" => {
+                            let mut target = None;
+                            let mut typ = None;
+                            for a in e.attributes() {
+                                match a.map_err(XlsxError::XmlAttr)? {
+                                    Attribute {
+                                        key: QName(b"Target"),
+                                        value: v,
+                                    } => target = Some(rels_xml.decoder().decode(&v)?.into_owned()),
+                                    Attribute {
+                                        key: QName(b"Type"),
+                                        value: v,
+                                    } => typ = Some(rels_xml.decoder().decode(&v)?.into_owned()),
+                                    _ => (),
+                                }
+                            }
+                            if let (Some(t), Some(type_name)) = (target, typ) {
+                                if type_name == "http://schemas.microsoft.com/office/2017/10/relationships/threadedComment" {
+                                    threaded_target = Some(normalize_relationship_target_from("xl/worksheets", &t));
+                                    break;
+                                }
+                            }
+                        }
+                        Ok(Event::Eof) => break,
+                        Err(e) => return Err(XlsxError::Xml(e)),
+                        _ => (),
+                    }
+                }
+
+                threaded_target
+            } else {
+                None
+            }
+        };
+
+        if let Some(target) = threaded_target {
+            if let Some(comments_xml) = xml_reader(&mut self.zip, &target) {
+                let mut comments_xml = comments_xml?;
+                let comments = parse_threaded_comments(&mut comments_xml)?;
+                return Ok(comments_map.entry(name.to_string()).or_insert(comments));
+            }
+        }
+
+        Ok(comments_map.entry(name.to_string()).or_insert(Vec::new()))
+    }
+
+    /// Get persons metadata for threaded comments
+    pub fn persons(&mut self) -> Result<&PersonsMap, XlsxError> {
+        if self.persons.is_none() {
+            if let Some(persons_xml) = xml_reader(&mut self.zip, "xl/persons/person.xml") {
+                let mut persons_xml = persons_xml?;
+                let persons = parse_persons(&mut persons_xml)?;
+                self.persons = Some(persons);
+            } else {
+                self.persons = Some(PersonsMap::new());
+            }
+        }
+
+        Ok(self.persons.as_ref().unwrap())
+    }
 }
 
 struct TableMetadata {
@@ -1992,6 +2191,9 @@ impl<RS: Read + Seek> Reader<RS> for Xlsx<RS> {
             #[cfg(feature = "picture")]
             pictures: None,
             merged_regions: None,
+            legacy_comments: None,
+            threaded_comments: None,
+            persons: None,
             options: XlsxOptions::default(),
         };
         xlsx.read_shared_strings()?;
@@ -2360,6 +2562,344 @@ impl<RS: Read + Seek> ReaderRef<RS> for Xlsx<RS> {
 
         Ok(Range::from_sparse(cells))
     }
+}
+
+fn normalize_relationship_target_from(base_path: &str, target: &str) -> String {
+    if target.starts_with("/xl/") {
+        return target[1..].to_string();
+    }
+    if target.starts_with("xl/") {
+        return target.to_string();
+    }
+
+    use std::path::{Component, PathBuf};
+
+    let mut base = PathBuf::from(base_path);
+    base.push(target);
+
+    let mut normalized = PathBuf::new();
+    for component in base.components() {
+        match component {
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            Component::CurDir => {}
+            Component::Normal(part) => normalized.push(part),
+            Component::RootDir => normalized.clear(),
+            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+        }
+    }
+
+    normalized.to_string_lossy().replace('\\', "/")
+}
+
+fn read_rich_text<RS>(
+    xml: &mut XlReader<'_, RS>,
+    closing: QName,
+) -> Result<Vec<RichTextRun>, XlsxError>
+where
+    RS: Read + Seek,
+{
+    let mut runs = Vec::new();
+    let mut buf = Vec::with_capacity(1024);
+    let mut val_buf = Vec::with_capacity(1024);
+
+    loop {
+        buf.clear();
+        match xml.read_event_into(&mut buf) {
+            Ok(Event::Start(ref e)) if e.local_name().as_ref() == b"r" => {
+                let mut text = String::new();
+                let mut bold = false;
+                let mut italic = false;
+                let mut color = None;
+
+                loop {
+                    val_buf.clear();
+                    match xml.read_event_into(&mut val_buf) {
+                        Ok(Event::Start(ref e)) if e.local_name().as_ref() == b"rPr" => loop {
+                            val_buf.clear();
+                            match xml.read_event_into(&mut val_buf) {
+                                Ok(Event::Empty(ref e)) if e.local_name().as_ref() == b"b" => {
+                                    bold = true;
+                                }
+                                Ok(Event::Empty(ref e)) if e.local_name().as_ref() == b"i" => {
+                                    italic = true;
+                                }
+                                Ok(Event::Empty(ref e)) if e.local_name().as_ref() == b"color" => {
+                                    if let Some(c) = get_attribute(e.attributes(), QName(b"rgb"))? {
+                                        color = Some(
+                                            xml.decoder()
+                                                .decode(c)?
+                                                .trim_start_matches("FF")
+                                                .to_string(),
+                                        );
+                                    }
+                                }
+                                Ok(Event::End(ref e)) if e.local_name().as_ref() == b"rPr" => break,
+                                Ok(Event::Eof) => return Err(XlsxError::XmlEof("rPr")),
+                                Err(e) => return Err(XlsxError::Xml(e)),
+                                _ => (),
+                            }
+                        },
+                        Ok(Event::Start(ref e)) if e.local_name().as_ref() == b"t" => {
+                            let mut text_buf = Vec::new();
+                            loop {
+                                text_buf.clear();
+                                match xml.read_event_into(&mut text_buf) {
+                                    Ok(Event::Text(t)) => {
+                                        text.push_str(&unescape_xml(&t.xml10_content()?))
+                                    }
+                                    Ok(Event::GeneralRef(e)) => {
+                                        unescape_entity_to_buffer(&e, &mut text)?
+                                    }
+                                    Ok(Event::End(end)) if end.name() == e.name() => break,
+                                    Ok(Event::Eof) => return Err(XlsxError::XmlEof("t")),
+                                    Err(e) => return Err(XlsxError::Xml(e)),
+                                    _ => (),
+                                }
+                            }
+                        }
+                        Ok(Event::End(ref e)) if e.local_name().as_ref() == b"r" => break,
+                        Ok(Event::Eof) => return Err(XlsxError::XmlEof("r")),
+                        Err(e) => return Err(XlsxError::Xml(e)),
+                        _ => (),
+                    }
+                }
+
+                // Normalize line endings
+                text = text.replace("\r\n", "\n");
+
+                runs.push(RichTextRun {
+                    text,
+                    bold,
+                    italic,
+                    color,
+                });
+            }
+            Ok(Event::End(ref e)) if e.name() == closing => return Ok(runs),
+            Ok(Event::Eof) => return Err(XlsxError::XmlEof("text")),
+            Err(e) => return Err(XlsxError::Xml(e)),
+            _ => (),
+        }
+    }
+}
+
+fn parse_legacy_comments<RS>(
+    xml: &mut XlReader<'_, RS>,
+) -> Result<(Vec<String>, Vec<Comment>), XlsxError>
+where
+    RS: Read + Seek,
+{
+    let mut authors = Vec::new();
+    let mut comments = Vec::new();
+    let mut buf = Vec::with_capacity(1024);
+    let mut in_authors = false;
+    let mut in_comment_list = false;
+
+    loop {
+        buf.clear();
+        match xml.read_event_into(&mut buf) {
+            Ok(Event::Start(ref e)) if e.local_name().as_ref() == b"authors" => {
+                in_authors = true;
+            }
+            Ok(Event::End(ref e)) if e.local_name().as_ref() == b"authors" => {
+                in_authors = false;
+            }
+            Ok(Event::Start(ref e)) if e.local_name().as_ref() == b"author" && in_authors => {
+                let mut author = String::new();
+                let mut author_buf = Vec::new();
+                loop {
+                    author_buf.clear();
+                    match xml.read_event_into(&mut author_buf) {
+                        Ok(Event::Text(t)) => author.push_str(&t.xml10_content()?),
+                        Ok(Event::End(end)) if end.name() == e.name() => break,
+                        Ok(Event::Eof) => return Err(XlsxError::XmlEof("author")),
+                        Err(e) => return Err(XlsxError::Xml(e)),
+                        _ => (),
+                    }
+                }
+                authors.push(author);
+            }
+            Ok(Event::Start(ref e)) if e.local_name().as_ref() == b"commentList" => {
+                in_comment_list = true;
+            }
+            Ok(Event::End(ref e)) if e.local_name().as_ref() == b"commentList" => {
+                in_comment_list = false;
+            }
+            Ok(Event::Start(ref e)) if e.local_name().as_ref() == b"comment" && in_comment_list => {
+                let cell_ref = get_attribute(e.attributes(), QName(b"ref"))?
+                    .and_then(|r| xml.decoder().decode(r).ok().map(|s| s.to_string()))
+                    .unwrap_or_default();
+
+                let author_id = get_attribute(e.attributes(), QName(b"authorId"))?
+                    .and_then(|a| atoi_simd::parse::<usize>(a).ok())
+                    .unwrap_or(0);
+
+                let mut text = Vec::new();
+                let position = None;
+
+                let mut comment_buf = Vec::new();
+                loop {
+                    comment_buf.clear();
+                    match xml.read_event_into(&mut comment_buf) {
+                        Ok(Event::Start(ref e)) if e.local_name().as_ref() == b"text" => {
+                            text = read_rich_text(xml, e.name())?;
+                        }
+                        Ok(Event::End(ref e)) if e.local_name().as_ref() == b"comment" => break,
+                        Ok(Event::Eof) => return Err(XlsxError::XmlEof("comment")),
+                        Err(e) => return Err(XlsxError::Xml(e)),
+                        _ => (),
+                    }
+                }
+
+                comments.push(Comment {
+                    cell_ref,
+                    author_id,
+                    text,
+                    position,
+                });
+            }
+            Ok(Event::End(ref e)) if e.local_name().as_ref() == b"comments" => break,
+            Ok(Event::Eof) => break,
+            Err(e) => return Err(XlsxError::Xml(e)),
+            _ => (),
+        }
+    }
+
+    Ok((authors, comments))
+}
+
+fn parse_threaded_comments<RS>(
+    xml: &mut XlReader<'_, RS>,
+) -> Result<Vec<ThreadedComment>, XlsxError>
+where
+    RS: Read + Seek,
+{
+    let mut comments = Vec::new();
+    let mut buf = Vec::with_capacity(1024);
+
+    loop {
+        buf.clear();
+        match xml.read_event_into(&mut buf) {
+            Ok(Event::Start(ref e)) if e.local_name().as_ref() == b"threadedComment" => {
+                let id = get_attribute(e.attributes(), QName(b"id"))?
+                    .and_then(|r| xml.decoder().decode(r).ok().map(|s| s.to_string()))
+                    .unwrap_or_default();
+
+                let cell_ref = get_attribute(e.attributes(), QName(b"ref"))?
+                    .and_then(|r| xml.decoder().decode(r).ok().map(|s| s.to_string()))
+                    .unwrap_or_default();
+
+                let person_id = get_attribute(e.attributes(), QName(b"personId"))?
+                    .and_then(|r| xml.decoder().decode(r).ok().map(|s| s.to_string()))
+                    .unwrap_or_default();
+
+                let parent_id = get_attribute(e.attributes(), QName(b"parentId"))?
+                    .and_then(|r| xml.decoder().decode(r).ok().map(|s| s.to_string()));
+
+                let timestamp = get_attribute(e.attributes(), QName(b"dT"))?
+                    .and_then(|r| xml.decoder().decode(r).ok().map(|s| s.to_string()));
+
+                let mut text = String::new();
+
+                loop {
+                    buf.clear();
+                    match xml.read_event_into(&mut buf) {
+                        Ok(Event::Start(ref e)) if e.local_name().as_ref() == b"text" => {
+                            let mut text_buf = Vec::new();
+                            loop {
+                                text_buf.clear();
+                                match xml.read_event_into(&mut text_buf) {
+                                    Ok(Event::Text(t)) => {
+                                        // Decode from bytes first, then unescape XML entities
+                                        let decoded = xml.decoder().decode(&t)?;
+                                        text.push_str(&unescape_xml(&decoded));
+                                    }
+                                    Ok(Event::GeneralRef(e)) => {
+                                        // Handle entity references like &amp; &lt; etc.
+                                        unescape_entity_to_buffer(&e, &mut text)?;
+                                    }
+                                    Ok(Event::End(end)) if end.name() == e.name() => break,
+                                    Ok(Event::Eof) => return Err(XlsxError::XmlEof("text")),
+                                    Err(e) => return Err(XlsxError::Xml(e)),
+                                    _ => (),
+                                }
+                            }
+                        }
+                        Ok(Event::End(ref e)) if e.local_name().as_ref() == b"threadedComment" => {
+                            break
+                        }
+                        Ok(Event::Eof) => return Err(XlsxError::XmlEof("threadedComment")),
+                        Err(e) => return Err(XlsxError::Xml(e)),
+                        _ => (),
+                    }
+                }
+
+                // Normalize line endings
+                text = text.replace("\r\n", "\n");
+
+                comments.push(ThreadedComment {
+                    id,
+                    cell_ref,
+                    person_id,
+                    text,
+                    parent_id,
+                    timestamp,
+                });
+            }
+            Ok(Event::End(ref e)) if e.local_name().as_ref() == b"ThreadedComments" => break,
+            Ok(Event::Eof) => break,
+            Err(e) => return Err(XlsxError::Xml(e)),
+            _ => (),
+        }
+    }
+
+    Ok(comments)
+}
+
+fn parse_persons<RS>(xml: &mut XlReader<'_, RS>) -> Result<PersonsMap, XlsxError>
+where
+    RS: Read + Seek,
+{
+    let mut persons = PersonsMap::new();
+    let mut buf = Vec::with_capacity(1024);
+
+    loop {
+        buf.clear();
+        match xml.read_event_into(&mut buf) {
+            Ok(Event::Empty(ref e)) | Ok(Event::Start(ref e))
+                if e.local_name().as_ref() == b"person" =>
+            {
+                let id = get_attribute(e.attributes(), QName(b"id"))?
+                    .and_then(|r| xml.decoder().decode(r).ok().map(|s| s.to_string()))
+                    .unwrap_or_default();
+
+                let display_name = get_attribute(e.attributes(), QName(b"displayName"))?
+                    .and_then(|r| xml.decoder().decode(r).ok().map(|s| s.to_string()))
+                    .unwrap_or_default();
+
+                let user_id = get_attribute(e.attributes(), QName(b"userId"))?
+                    .and_then(|r| xml.decoder().decode(r).ok().map(|s| s.to_string()));
+
+                if !id.is_empty() {
+                    persons.insert(
+                        id.clone(),
+                        Person {
+                            id,
+                            display_name,
+                            user_id,
+                        },
+                    );
+                }
+            }
+            Ok(Event::End(ref e)) if e.local_name().as_ref() == b"personList" => break,
+            Ok(Event::Eof) => break,
+            Err(e) => return Err(XlsxError::Xml(e)),
+            _ => (),
+        }
+    }
+
+    Ok(persons)
 }
 
 fn xml_reader<'a, RS: Read + Seek>(
@@ -3457,6 +3997,9 @@ mod tests {
             #[cfg(feature = "picture")]
             pictures: None,
             merged_regions: None,
+            legacy_comments: None,
+            threaded_comments: None,
+            persons: None,
             options: XlsxOptions::default(),
         };
 
