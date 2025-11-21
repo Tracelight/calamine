@@ -76,6 +76,8 @@ impl fmt::Display for Color {
 /// Border style enumeration
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[derive(Default)]
+#[derive(strum::Display)]
+#[strum(serialize_all = "camelCase")]
 pub enum BorderStyle {
     /// No border
     #[default]
@@ -195,6 +197,8 @@ pub enum FontStyle {
 /// Underline style
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[derive(Default)]
+#[derive(strum::Display)]
+#[strum(serialize_all = "camelCase")]
 pub enum UnderlineStyle {
     /// No underline
     #[default]
@@ -309,6 +313,8 @@ impl Font {
 /// Horizontal alignment
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[derive(Default)]
+#[derive(strum::Display)]
+#[strum(serialize_all = "camelCase")]
 pub enum HorizontalAlignment {
     /// Left alignment
     Left,
@@ -331,6 +337,8 @@ pub enum HorizontalAlignment {
 /// Vertical alignment
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[derive(Default)]
+#[derive(strum::Display)]
+#[strum(serialize_all = "camelCase")]
 pub enum VerticalAlignment {
     /// Top alignment
     Top,
@@ -423,6 +431,8 @@ impl Alignment {
 /// Fill pattern type
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[derive(Default)]
+#[derive(strum::Display)]
+#[strum(serialize_all = "camelCase")]
 pub enum FillPattern {
     /// No fill
     #[default]
