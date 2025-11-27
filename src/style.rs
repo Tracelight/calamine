@@ -100,8 +100,12 @@ pub enum BorderStyle {
     MediumDashed,
     /// Dash dot border
     DashDot,
+    /// Medium dash dot border
+    MediumDashDot,
     /// Dash dot dot border
     DashDotDot,
+    /// Medium dash dot dot border
+    MediumDashDotDot,
     /// Slant dash dot border
     SlantDashDot,
 }
@@ -328,6 +332,8 @@ pub enum HorizontalAlignment {
     Distributed,
     /// Fill alignment
     Fill,
+    /// Center continuous alignment (centered across multiple cells)
+    CenterContinuous,
     /// General alignment (default)
     #[default]
     General,

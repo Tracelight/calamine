@@ -212,6 +212,7 @@ fn parse_horizontal_alignment(s: &str) -> HorizontalAlignment {
         "justify" => HorizontalAlignment::Justify,
         "distributed" => HorizontalAlignment::Distributed,
         "fill" => HorizontalAlignment::Fill,
+        "centerContinuous" => HorizontalAlignment::CenterContinuous,
         _ => HorizontalAlignment::General,
     }
 }
@@ -265,7 +266,9 @@ fn parse_border_style(s: &str) -> BorderStyle {
         "dotted" => BorderStyle::Dotted,
         "mediumDashed" => BorderStyle::MediumDashed,
         "dashDot" => BorderStyle::DashDot,
+        "mediumDashDot" => BorderStyle::MediumDashDot,
         "dashDotDot" => BorderStyle::DashDotDot,
+        "mediumDashDotDot" => BorderStyle::MediumDashDotDot,
         "slantDashDot" => BorderStyle::SlantDashDot,
         _ => BorderStyle::None,
     }
