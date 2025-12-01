@@ -380,6 +380,7 @@ impl<RS: Read + Seek> Xlsx<RS> {
         let mut fonts = Vec::new();
         let mut fills = Vec::new();
         let mut borders = Vec::new();
+        let mut cell_style_xfs: Vec<Style> = Vec::new();
 
         let mut buf = Vec::with_capacity(1024);
         let mut inner_buf = Vec::with_capacity(1024);
@@ -477,22 +478,91 @@ impl<RS: Read + Seek> Xlsx<RS> {
                         _ => (),
                     }
                 },
-                Ok(Event::Start(e)) if e.local_name().as_ref() == b"cellXfs" => loop {
+                Ok(Event::Start(e)) if e.local_name().as_ref() == b"cellStyleXfs" => loop {
                     inner_buf.clear();
                     match xml.read_event_into(&mut inner_buf) {
                         Ok(Event::Start(e)) if e.local_name().as_ref() == b"xf" => {
                             let mut style = Style::new();
+                            let mut font_id: Option<usize> = None;
+                            let mut fill_id: Option<usize> = None;
+                            let mut border_id: Option<usize> = None;
 
+                            for a in e.attributes() {
+                                let a = a.map_err(XlsxError::XmlAttr)?;
+                                match a.key.as_ref() {
+                                    b"fontId" => { font_id = xml.decoder().decode(&a.value)?.parse().ok(); }
+                                    b"fillId" => { fill_id = xml.decoder().decode(&a.value)?.parse().ok(); }
+                                    b"borderId" => { border_id = xml.decoder().decode(&a.value)?.parse().ok(); }
+                                    _ => {}
+                                }
+                            }
+
+                            if let Some(id) = font_id {
+                                if let Some(font) = fonts.get(id) { style = style.with_font(font.clone()); }
+                            }
+                            if let Some(id) = fill_id {
+                                if let Some(fill) = fills.get(id) { style = style.with_fill(fill.clone()); }
+                            }
+                            if let Some(id) = border_id {
+                                if let Some(border) = borders.get(id) { style = style.with_borders(border.clone()); }
+                            }
+
+                            xml.read_to_end_into(e.name(), &mut Vec::new())?;
+                            cell_style_xfs.push(style);
+                        }
+                        Ok(Event::Empty(e)) if e.local_name().as_ref() == b"xf" => {
+                            let mut style = Style::new();
+                            let mut font_id: Option<usize> = None;
+                            let mut fill_id: Option<usize> = None;
+                            let mut border_id: Option<usize> = None;
+
+                            for a in e.attributes() {
+                                let a = a.map_err(XlsxError::XmlAttr)?;
+                                match a.key.as_ref() {
+                                    b"fontId" => { font_id = xml.decoder().decode(&a.value)?.parse().ok(); }
+                                    b"fillId" => { fill_id = xml.decoder().decode(&a.value)?.parse().ok(); }
+                                    b"borderId" => { border_id = xml.decoder().decode(&a.value)?.parse().ok(); }
+                                    _ => {}
+                                }
+                            }
+
+                            if let Some(id) = font_id {
+                                if let Some(font) = fonts.get(id) { style = style.with_font(font.clone()); }
+                            }
+                            if let Some(id) = fill_id {
+                                if let Some(fill) = fills.get(id) { style = style.with_fill(fill.clone()); }
+                            }
+                            if let Some(id) = border_id {
+                                if let Some(border) = borders.get(id) { style = style.with_borders(border.clone()); }
+                            }
+
+                            cell_style_xfs.push(style);
+                        }
+                        Ok(Event::End(e)) if e.local_name().as_ref() == b"cellStyleXfs" => break,
+                        Ok(Event::Eof) => return Err(XlsxError::XmlEof("cellStyleXfs")),
+                        Err(e) => return Err(XlsxError::Xml(e)),
+                        _ => (),
+                    }
+                },
+                Ok(Event::Start(e)) if e.local_name().as_ref() == b"cellXfs" => loop {
+                    inner_buf.clear();
+                    match xml.read_event_into(&mut inner_buf) {
+                        Ok(Event::Start(e)) if e.local_name().as_ref() == b"xf" => {
+                            let mut xf_id: usize = 0;
                             let mut font_id: Option<usize> = None;
                             let mut fill_id: Option<usize> = None;
                             let mut border_id: Option<usize> = None;
                             let mut apply_font = false;
                             let mut apply_fill = false;
                             let mut apply_border = false;
+                            let mut num_fmt_id: Option<u32> = None;
 
                             for a in e.attributes() {
                                 let a = a.map_err(XlsxError::XmlAttr)?;
                                 match a.key.as_ref() {
+                                    b"xfId" => {
+                                        xf_id = xml.decoder().decode(&a.value)?.parse().unwrap_or(0);
+                                    }
                                     b"fontId" => {
                                         font_id = xml.decoder().decode(&a.value)?.parse().ok();
                                     }
@@ -512,64 +582,13 @@ impl<RS: Read + Seek> Xlsx<RS> {
                                         apply_border = a.value.as_ref() == b"1" || a.value.as_ref() == b"true";
                                     }
                                     b"numFmtId" => {
-                                        if let Ok(num_fmt_id) =
-                                            xml.decoder().decode(&a.value)?.parse::<u32>()
-                                        {
-                                            let mut fmt_id_bytes = Vec::new();
-                                            fmt_id_bytes.extend_from_slice(&a.value);
-                                            let format_code = match number_formats
-                                                .get(&fmt_id_bytes)
-                                            {
-                                                Some(fmt) => fmt.clone(),
-                                                None => {
-                                                    // Use built-in format
-                                                    match num_fmt_id {
-                                                        0 => "General".to_string(),
-                                                        1 => "0".to_string(),
-                                                        2 => "0.00".to_string(),
-                                                        3 => "#,##0".to_string(),
-                                                        4 => "#,##0.00".to_string(),
-                                                        9 => "0%".to_string(),
-                                                        10 => "0.00%".to_string(),
-                                                        11 => "0.00E+00".to_string(),
-                                                        12 => "# ?/?".to_string(),
-                                                        13 => "# ??/??".to_string(),
-                                                        14 => "mm-dd-yy".to_string(),
-                                                        15 => "d-mmm-yy".to_string(),
-                                                        16 => "d-mmm".to_string(),
-                                                        17 => "mmm-yy".to_string(),
-                                                        18 => "h:mm AM/PM".to_string(),
-                                                        19 => "h:mm:ss AM/PM".to_string(),
-                                                        20 => "h:mm".to_string(),
-                                                        21 => "h:mm:ss".to_string(),
-                                                        22 => "m/d/yy h:mm".to_string(),
-                                                        37 => "#,##0 ;(#,##0)".to_string(),
-                                                        38 => "#,##0 ;[Red](#,##0)".to_string(),
-                                                        39 => "#,##0.00;(#,##0.00)".to_string(),
-                                                        40 => "#,##0.00;[Red](#,##0.00)".to_string(),
-                                                        41 => "_(* #,##0_);_(* (#,##0);_(* \"-\"_);_(@_)".to_string(),
-                                                        42 => "_($* #,##0_);_($* (#,##0);_($* \"-\"_);_(@_)".to_string(),
-                                                        43 => "_(* #,##0.00_);_(* (#,##0.00);_(* \"-\"??_);_(@_)".to_string(),
-                                                        44 => "_($* #,##0.00_);_($* (#,##0.00);_($* \"-\"??_);_(@_)".to_string(),
-                                                        45 => "mm:ss".to_string(),
-                                                        46 => "[h]:mm:ss".to_string(),
-                                                        47 => "mmss.0".to_string(),
-                                                        48 => "##0.0E+0".to_string(),
-                                                        49 => "@".to_string(),
-                                                        _ => "General".to_string(),
-                                                    }
-                                                }
-                                            };
-
-                                            use crate::style::NumberFormat;
-                                            let number_format =
-                                                NumberFormat::new(format_code).with_id(num_fmt_id);
-                                            style = style.with_number_format(number_format);
-                                        }
+                                        num_fmt_id = xml.decoder().decode(&a.value)?.parse().ok();
                                     }
                                     _ => {}
                                 }
                             }
+
+                            let mut style = cell_style_xfs.get(xf_id).cloned().unwrap_or_default();
 
                             if apply_font {
                                 if let Some(id) = font_id {
@@ -591,6 +610,54 @@ impl<RS: Read + Seek> Xlsx<RS> {
                                         style = style.with_borders(border.clone());
                                     }
                                 }
+                            }
+
+                            if let Some(nfid) = num_fmt_id {
+                                let mut fmt_id_bytes = nfid.to_string().into_bytes();
+                                let format_code = match number_formats.get(&fmt_id_bytes) {
+                                    Some(fmt) => fmt.clone(),
+                                    None => {
+                                        match nfid {
+                                            0 => "General".to_string(),
+                                            1 => "0".to_string(),
+                                            2 => "0.00".to_string(),
+                                            3 => "#,##0".to_string(),
+                                            4 => "#,##0.00".to_string(),
+                                            9 => "0%".to_string(),
+                                            10 => "0.00%".to_string(),
+                                            11 => "0.00E+00".to_string(),
+                                            12 => "# ?/?".to_string(),
+                                            13 => "# ??/??".to_string(),
+                                            14 => "mm-dd-yy".to_string(),
+                                            15 => "d-mmm-yy".to_string(),
+                                            16 => "d-mmm".to_string(),
+                                            17 => "mmm-yy".to_string(),
+                                            18 => "h:mm AM/PM".to_string(),
+                                            19 => "h:mm:ss AM/PM".to_string(),
+                                            20 => "h:mm".to_string(),
+                                            21 => "h:mm:ss".to_string(),
+                                            22 => "m/d/yy h:mm".to_string(),
+                                            37 => "#,##0 ;(#,##0)".to_string(),
+                                            38 => "#,##0 ;[Red](#,##0)".to_string(),
+                                            39 => "#,##0.00;(#,##0.00)".to_string(),
+                                            40 => "#,##0.00;[Red](#,##0.00)".to_string(),
+                                            41 => "_(* #,##0_);_(* (#,##0);_(* \"-\"_);_(@_)".to_string(),
+                                            42 => "_($* #,##0_);_($* (#,##0);_($* \"-\"_);_(@_)".to_string(),
+                                            43 => "_(* #,##0.00_);_(* (#,##0.00);_(* \"-\"??_);_(@_)".to_string(),
+                                            44 => "_($* #,##0.00_);_($* (#,##0.00);_($* \"-\"??_);_(@_)".to_string(),
+                                            45 => "mm:ss".to_string(),
+                                            46 => "[h]:mm:ss".to_string(),
+                                            47 => "mmss.0".to_string(),
+                                            48 => "##0.0E+0".to_string(),
+                                            49 => "@".to_string(),
+                                            _ => "General".to_string(),
+                                        }
+                                    }
+                                };
+
+                                use crate::style::NumberFormat;
+                                let number_format = NumberFormat::new(format_code).with_id(nfid);
+                                style = style.with_number_format(number_format);
                             }
 
                             // Also parse any nested elements like alignment and protection
@@ -643,18 +710,21 @@ impl<RS: Read + Seek> Xlsx<RS> {
                             );
                         }
                         Ok(Event::Empty(e)) if e.local_name().as_ref() == b"xf" => {
-                            let mut style = Style::new();
-
+                            let mut xf_id: usize = 0;
                             let mut font_id: Option<usize> = None;
                             let mut fill_id: Option<usize> = None;
                             let mut border_id: Option<usize> = None;
                             let mut apply_font = false;
                             let mut apply_fill = false;
                             let mut apply_border = false;
+                            let mut num_fmt_id: Option<u32> = None;
 
                             for a in e.attributes() {
                                 let a = a.map_err(XlsxError::XmlAttr)?;
                                 match a.key.as_ref() {
+                                    b"xfId" => {
+                                        xf_id = xml.decoder().decode(&a.value)?.parse().unwrap_or(0);
+                                    }
                                     b"fontId" => {
                                         font_id = xml.decoder().decode(&a.value)?.parse().ok();
                                     }
@@ -674,63 +744,13 @@ impl<RS: Read + Seek> Xlsx<RS> {
                                         apply_border = a.value.as_ref() == b"1" || a.value.as_ref() == b"true";
                                     }
                                     b"numFmtId" => {
-                                        if let Ok(num_fmt_id) =
-                                            xml.decoder().decode(&a.value)?.parse::<u32>()
-                                        {
-                                            let mut fmt_id_bytes = Vec::new();
-                                            fmt_id_bytes.extend_from_slice(&a.value);
-                                            let format_code = match number_formats
-                                                .get(&fmt_id_bytes)
-                                            {
-                                                Some(fmt) => fmt.clone(),
-                                                None => {
-                                                    match num_fmt_id {
-                                                        0 => "General".to_string(),
-                                                        1 => "0".to_string(),
-                                                        2 => "0.00".to_string(),
-                                                        3 => "#,##0".to_string(),
-                                                        4 => "#,##0.00".to_string(),
-                                                        9 => "0%".to_string(),
-                                                        10 => "0.00%".to_string(),
-                                                        11 => "0.00E+00".to_string(),
-                                                        12 => "# ?/?".to_string(),
-                                                        13 => "# ??/??".to_string(),
-                                                        14 => "mm-dd-yy".to_string(),
-                                                        15 => "d-mmm-yy".to_string(),
-                                                        16 => "d-mmm".to_string(),
-                                                        17 => "mmm-yy".to_string(),
-                                                        18 => "h:mm AM/PM".to_string(),
-                                                        19 => "h:mm:ss AM/PM".to_string(),
-                                                        20 => "h:mm".to_string(),
-                                                        21 => "h:mm:ss".to_string(),
-                                                        22 => "m/d/yy h:mm".to_string(),
-                                                        37 => "#,##0 ;(#,##0)".to_string(),
-                                                        38 => "#,##0 ;[Red](#,##0)".to_string(),
-                                                        39 => "#,##0.00;(#,##0.00)".to_string(),
-                                                        40 => "#,##0.00;[Red](#,##0.00)".to_string(),
-                                                        41 => "_(* #,##0_);_(* (#,##0);_(* \"-\"_);_(@_)".to_string(),
-                                                        42 => "_($* #,##0_);_($* (#,##0);_($* \"-\"_);_(@_)".to_string(),
-                                                        43 => "_(* #,##0.00_);_(* (#,##0.00);_(* \"-\"??_);_(@_)".to_string(),
-                                                        44 => "_($* #,##0.00_);_($* (#,##0.00);_($* \"-\"??_);_(@_)".to_string(),
-                                                        45 => "mm:ss".to_string(),
-                                                        46 => "[h]:mm:ss".to_string(),
-                                                        47 => "mmss.0".to_string(),
-                                                        48 => "##0.0E+0".to_string(),
-                                                        49 => "@".to_string(),
-                                                        _ => "General".to_string(),
-                                                    }
-                                                }
-                                            };
-
-                                            use crate::style::NumberFormat;
-                                            let number_format =
-                                                NumberFormat::new(format_code).with_id(num_fmt_id);
-                                            style = style.with_number_format(number_format);
-                                        }
+                                        num_fmt_id = xml.decoder().decode(&a.value)?.parse().ok();
                                     }
                                     _ => {}
                                 }
                             }
+
+                            let mut style = cell_style_xfs.get(xf_id).cloned().unwrap_or_default();
 
                             if apply_font {
                                 if let Some(id) = font_id {
@@ -752,6 +772,54 @@ impl<RS: Read + Seek> Xlsx<RS> {
                                         style = style.with_borders(border.clone());
                                     }
                                 }
+                            }
+
+                            if let Some(nfid) = num_fmt_id {
+                                let fmt_id_bytes = nfid.to_string().into_bytes();
+                                let format_code = match number_formats.get(&fmt_id_bytes) {
+                                    Some(fmt) => fmt.clone(),
+                                    None => {
+                                        match nfid {
+                                            0 => "General".to_string(),
+                                            1 => "0".to_string(),
+                                            2 => "0.00".to_string(),
+                                            3 => "#,##0".to_string(),
+                                            4 => "#,##0.00".to_string(),
+                                            9 => "0%".to_string(),
+                                            10 => "0.00%".to_string(),
+                                            11 => "0.00E+00".to_string(),
+                                            12 => "# ?/?".to_string(),
+                                            13 => "# ??/??".to_string(),
+                                            14 => "mm-dd-yy".to_string(),
+                                            15 => "d-mmm-yy".to_string(),
+                                            16 => "d-mmm".to_string(),
+                                            17 => "mmm-yy".to_string(),
+                                            18 => "h:mm AM/PM".to_string(),
+                                            19 => "h:mm:ss AM/PM".to_string(),
+                                            20 => "h:mm".to_string(),
+                                            21 => "h:mm:ss".to_string(),
+                                            22 => "m/d/yy h:mm".to_string(),
+                                            37 => "#,##0 ;(#,##0)".to_string(),
+                                            38 => "#,##0 ;[Red](#,##0)".to_string(),
+                                            39 => "#,##0.00;(#,##0.00)".to_string(),
+                                            40 => "#,##0.00;[Red](#,##0.00)".to_string(),
+                                            41 => "_(* #,##0_);_(* (#,##0);_(* \"-\"_);_(@_)".to_string(),
+                                            42 => "_($* #,##0_);_($* (#,##0);_($* \"-\"_);_(@_)".to_string(),
+                                            43 => "_(* #,##0.00_);_(* (#,##0.00);_(* \"-\"??_);_(@_)".to_string(),
+                                            44 => "_($* #,##0.00_);_($* (#,##0.00);_($* \"-\"??_);_(@_)".to_string(),
+                                            45 => "mm:ss".to_string(),
+                                            46 => "[h]:mm:ss".to_string(),
+                                            47 => "mmss.0".to_string(),
+                                            48 => "##0.0E+0".to_string(),
+                                            49 => "@".to_string(),
+                                            _ => "General".to_string(),
+                                        }
+                                    }
+                                };
+
+                                use crate::style::NumberFormat;
+                                let number_format = NumberFormat::new(format_code).with_id(nfid);
+                                style = style.with_number_format(number_format);
                             }
 
                             self.styles.push(style);
