@@ -481,39 +481,35 @@ impl<RS: Read + Seek> Xlsx<RS> {
                     inner_buf.clear();
                     match xml.read_event_into(&mut inner_buf) {
                         Ok(Event::Start(e)) if e.local_name().as_ref() == b"xf" => {
-                            // Parse the style by building it from referenced components
                             let mut style = Style::new();
 
-                            // Parse attributes to get references to fonts, fills, borders
+                            let mut font_id: Option<usize> = None;
+                            let mut fill_id: Option<usize> = None;
+                            let mut border_id: Option<usize> = None;
+                            let mut apply_font = false;
+                            let mut apply_fill = false;
+                            let mut apply_border = false;
+
                             for a in e.attributes() {
                                 let a = a.map_err(XlsxError::XmlAttr)?;
                                 match a.key.as_ref() {
                                     b"fontId" => {
-                                        if let Ok(font_id) =
-                                            xml.decoder().decode(&a.value)?.parse::<usize>()
-                                        {
-                                            if let Some(font) = fonts.get(font_id) {
-                                                style = style.with_font(font.clone());
-                                            }
-                                        }
+                                        font_id = xml.decoder().decode(&a.value)?.parse().ok();
                                     }
                                     b"fillId" => {
-                                        if let Ok(fill_id) =
-                                            xml.decoder().decode(&a.value)?.parse::<usize>()
-                                        {
-                                            if let Some(fill) = fills.get(fill_id) {
-                                                style = style.with_fill(fill.clone());
-                                            }
-                                        }
+                                        fill_id = xml.decoder().decode(&a.value)?.parse().ok();
                                     }
                                     b"borderId" => {
-                                        if let Ok(border_id) =
-                                            xml.decoder().decode(&a.value)?.parse::<usize>()
-                                        {
-                                            if let Some(border) = borders.get(border_id) {
-                                                style = style.with_borders(border.clone());
-                                            }
-                                        }
+                                        border_id = xml.decoder().decode(&a.value)?.parse().ok();
+                                    }
+                                    b"applyFont" => {
+                                        apply_font = a.value.as_ref() == b"1" || a.value.as_ref() == b"true";
+                                    }
+                                    b"applyFill" => {
+                                        apply_fill = a.value.as_ref() == b"1" || a.value.as_ref() == b"true";
+                                    }
+                                    b"applyBorder" => {
+                                        apply_border = a.value.as_ref() == b"1" || a.value.as_ref() == b"true";
                                     }
                                     b"numFmtId" => {
                                         if let Ok(num_fmt_id) =
@@ -572,6 +568,28 @@ impl<RS: Read + Seek> Xlsx<RS> {
                                         }
                                     }
                                     _ => {}
+                                }
+                            }
+
+                            if apply_font {
+                                if let Some(id) = font_id {
+                                    if let Some(font) = fonts.get(id) {
+                                        style = style.with_font(font.clone());
+                                    }
+                                }
+                            }
+                            if apply_fill {
+                                if let Some(id) = fill_id {
+                                    if let Some(fill) = fills.get(id) {
+                                        style = style.with_fill(fill.clone());
+                                    }
+                                }
+                            }
+                            if apply_border {
+                                if let Some(id) = border_id {
+                                    if let Some(border) = borders.get(id) {
+                                        style = style.with_borders(border.clone());
+                                    }
                                 }
                             }
 

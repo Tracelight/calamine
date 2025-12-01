@@ -154,10 +154,12 @@ fn parse_color(attributes: &[Attribute]) -> Result<Option<Color>, XlsxError> {
     Ok(None)
 }
 
-fn parse_color_with_theme(
+/// Result of parsing a color: (color, from_theme)
+/// from_theme is true if color came from theme attribute, false if from rgb/indexed
+fn parse_color_with_source(
     attributes: &[Attribute],
     theme_data: Option<&Theme>,
-) -> Result<Option<Color>, XlsxError> {
+) -> Result<Option<(Color, bool)>, XlsxError> {
     let mut rgb: Option<String> = None;
     let mut theme_idx: Option<u8> = None;
     let mut indexed: Option<u8> = None;
@@ -195,13 +197,13 @@ fn parse_color_with_theme(
             let g = u8::from_str_radix(&hex[4..6], 16).unwrap_or(0);
             let b = u8::from_str_radix(&hex[6..8], 16).unwrap_or(0);
             let color = Color::new(a, r, g, b);
-            return Ok(Some(if tint != 0.0 { color.with_tint(tint) } else { color }));
+            return Ok(Some((if tint != 0.0 { color.with_tint(tint) } else { color }, false)));
         } else if hex.len() == 6 {
             let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or(0);
             let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or(0);
             let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or(0);
             let color = Color::rgb(r, g, b);
-            return Ok(Some(if tint != 0.0 { color.with_tint(tint) } else { color }));
+            return Ok(Some((if tint != 0.0 { color.with_tint(tint) } else { color }, false)));
         }
     }
 
@@ -211,15 +213,22 @@ fn parse_color_with_theme(
         } else {
             get_theme_color(idx)
         };
-        return Ok(Some(if tint != 0.0 { color.with_tint(tint) } else { color }));
+        return Ok(Some((if tint != 0.0 { color.with_tint(tint) } else { color }, true)));
     }
 
     if let Some(idx) = indexed {
         let color = get_indexed_color(idx);
-        return Ok(Some(if tint != 0.0 { color.with_tint(tint) } else { color }));
+        return Ok(Some((if tint != 0.0 { color.with_tint(tint) } else { color }, false)));
     }
 
     Ok(None)
+}
+
+fn parse_color_with_theme(
+    attributes: &[Attribute],
+    theme_data: Option<&Theme>,
+) -> Result<Option<Color>, XlsxError> {
+    Ok(parse_color_with_source(attributes, theme_data)?.map(|(c, _)| c))
 }
 
 /// Parse font weight from string
@@ -444,10 +453,10 @@ pub fn parse_font<RS: BufRead>(
                     font = font.with_strikethrough(true);
                 }
                 b"color" => {
-                    if let Some(color) =
-                        parse_color(&e.attributes().collect::<Result<Vec<_>, _>>()?)?
+                    if let Some((color, from_theme)) =
+                        parse_color_with_source(&e.attributes().collect::<Result<Vec<_>, _>>()?, None)?
                     {
-                        font = font.with_color(color);
+                        font = font.with_color_and_source(color, from_theme);
                     }
                 }
                 b"family" => {
@@ -557,10 +566,10 @@ pub fn parse_font_with_theme<RS: BufRead>(
                     font = font.with_strikethrough(true);
                 }
                 b"color" => {
-                    if let Some(color) =
-                        parse_color_with_theme(&e.attributes().collect::<Result<Vec<_>, _>>()?, theme)?
+                    if let Some((color, from_theme)) =
+                        parse_color_with_source(&e.attributes().collect::<Result<Vec<_>, _>>()?, theme)?
                     {
-                        font = font.with_color(color);
+                        font = font.with_color_and_source(color, from_theme);
                     }
                 }
                 b"family" => {

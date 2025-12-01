@@ -261,6 +261,8 @@ pub struct Font {
     pub strikethrough: bool,
     /// Font color
     pub color: Option<Color>,
+    /// Whether the font color came from a theme (vs explicit RGB)
+    pub color_from_theme: bool,
     /// Font family
     pub family: Option<String>,
 }
@@ -310,6 +312,13 @@ impl Font {
     /// Set font color
     pub fn with_color(mut self, color: Color) -> Self {
         self.color = Some(color);
+        self
+    }
+
+    /// Set font color with theme tracking
+    pub fn with_color_and_source(mut self, color: Color, from_theme: bool) -> Self {
+        self.color = Some(color);
+        self.color_from_theme = from_theme;
         self
     }
 
