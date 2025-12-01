@@ -14,7 +14,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .with_color(Color::rgb(255, 0, 0)),
     );
 
-    let cell = Cell::with_style((0, 0), Data::String("Hello World".to_string()), style);
+    let cell = Cell::with_style((0, 0), Data::String("Hello World".to_string()), &style);
 
     println!("Created cell with style:");
     if let Some(cell_style) = cell.get_style() {
@@ -34,10 +34,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Example of creating CellData with style
     use calamine::CellData;
 
-    let cell_data = CellData::with_style(
-        Data::Int(42),
-        Style::new().with_font(Font::new().with_weight(FontWeight::Bold)),
-    );
+    let bold_style = Style::new().with_font(Font::new().with_weight(FontWeight::Bold));
+    let cell_data = CellData::with_style(Data::Int(42), &bold_style);
 
     println!("\nCreated CellData with style:");
     if cell_data.has_style() {
@@ -60,7 +58,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_fill(calamine::Fill::solid(Color::rgb(255, 255, 0)))
         .with_borders(calamine::Borders::new());
 
-    let styled_cell = Cell::with_style((1, 1), Data::Float(3.14), complex_style);
+    let styled_cell = Cell::with_style((1, 1), Data::Float(3.14), &complex_style);
 
     println!("\nCreated cell with complex style:");
     if let Some(style) = styled_cell.get_style() {

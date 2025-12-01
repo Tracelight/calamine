@@ -1722,7 +1722,7 @@ impl<RS: Read + Seek> Xlsx<RS> {
     ///     let mut workbook: Xlsx<_> = open_workbook(path)?;
     ///
     ///     // Get the cells reader for the first worksheet.
-    ///     let reader = workbook.worksheet_cells_reader("Sheet1")?;
+    ///     let mut reader = workbook.worksheet_cells_reader("Sheet1")?;
     ///
     ///     // Iterate over the cells in the worksheet.
     ///     while let Some(cell) = reader.next_cell()? {

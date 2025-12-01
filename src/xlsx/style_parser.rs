@@ -35,88 +35,77 @@ pub(crate) fn get_theme_color(theme: u8) -> Color {
     }
 }
 
-/// Get indexed color from Excel's official color index palette
-/// Based on: https://learn.microsoft.com/en-us/office/vba/api/excel.colorindex
+const INDEXED_COLORS: [Color; 66] = [
+    Color { alpha: 255, red: 0x00, green: 0x00, blue: 0x00 }, // 0: Black
+    Color { alpha: 255, red: 0xFF, green: 0xFF, blue: 0xFF }, // 1: White
+    Color { alpha: 255, red: 0xFF, green: 0x00, blue: 0x00 }, // 2: Red
+    Color { alpha: 255, red: 0x00, green: 0xFF, blue: 0x00 }, // 3: Green
+    Color { alpha: 255, red: 0x00, green: 0x00, blue: 0xFF }, // 4: Blue
+    Color { alpha: 255, red: 0xFF, green: 0xFF, blue: 0x00 }, // 5: Yellow
+    Color { alpha: 255, red: 0xFF, green: 0x00, blue: 0xFF }, // 6: Magenta
+    Color { alpha: 255, red: 0x00, green: 0xFF, blue: 0xFF }, // 7: Cyan
+    Color { alpha: 255, red: 0x00, green: 0x00, blue: 0x00 }, // 8: Black
+    Color { alpha: 255, red: 0xFF, green: 0xFF, blue: 0xFF }, // 9: White
+    Color { alpha: 255, red: 0xFF, green: 0x00, blue: 0x00 }, // 10: Red
+    Color { alpha: 255, red: 0x00, green: 0xFF, blue: 0x00 }, // 11: Green
+    Color { alpha: 255, red: 0x00, green: 0x00, blue: 0xFF }, // 12: Blue
+    Color { alpha: 255, red: 0xFF, green: 0xFF, blue: 0x00 }, // 13: Yellow
+    Color { alpha: 255, red: 0xFF, green: 0x00, blue: 0xFF }, // 14: Magenta
+    Color { alpha: 255, red: 0x00, green: 0xFF, blue: 0xFF }, // 15: Cyan
+    Color { alpha: 255, red: 0x80, green: 0x00, blue: 0x00 }, // 16: Maroon
+    Color { alpha: 255, red: 0x00, green: 0x80, blue: 0x00 }, // 17: Dark Green
+    Color { alpha: 255, red: 0x00, green: 0x00, blue: 0x80 }, // 18: Dark Blue
+    Color { alpha: 255, red: 0x80, green: 0x80, blue: 0x00 }, // 19: Olive
+    Color { alpha: 255, red: 0x80, green: 0x00, blue: 0x80 }, // 20: Purple
+    Color { alpha: 255, red: 0x00, green: 0x80, blue: 0x80 }, // 21: Teal
+    Color { alpha: 255, red: 0xC0, green: 0xC0, blue: 0xC0 }, // 22: Silver
+    Color { alpha: 255, red: 0x80, green: 0x80, blue: 0x80 }, // 23: Gray
+    Color { alpha: 255, red: 0x99, green: 0x99, blue: 0xFF }, // 24
+    Color { alpha: 255, red: 0x99, green: 0x33, blue: 0x66 }, // 25
+    Color { alpha: 255, red: 0xFF, green: 0xFF, blue: 0xCC }, // 26
+    Color { alpha: 255, red: 0xCC, green: 0xFF, blue: 0xFF }, // 27
+    Color { alpha: 255, red: 0x66, green: 0x00, blue: 0x66 }, // 28
+    Color { alpha: 255, red: 0xFF, green: 0x80, blue: 0x80 }, // 29
+    Color { alpha: 255, red: 0x00, green: 0x66, blue: 0xCC }, // 30
+    Color { alpha: 255, red: 0xCC, green: 0xCC, blue: 0xFF }, // 31
+    Color { alpha: 255, red: 0x00, green: 0x00, blue: 0x80 }, // 32
+    Color { alpha: 255, red: 0xFF, green: 0x00, blue: 0xFF }, // 33
+    Color { alpha: 255, red: 0xFF, green: 0xFF, blue: 0x00 }, // 34
+    Color { alpha: 255, red: 0x00, green: 0xFF, blue: 0xFF }, // 35
+    Color { alpha: 255, red: 0x80, green: 0x00, blue: 0x80 }, // 36
+    Color { alpha: 255, red: 0x80, green: 0x00, blue: 0x00 }, // 37
+    Color { alpha: 255, red: 0x00, green: 0x80, blue: 0x80 }, // 38
+    Color { alpha: 255, red: 0x00, green: 0x00, blue: 0xFF }, // 39
+    Color { alpha: 255, red: 0x00, green: 0xCC, blue: 0xFF }, // 40
+    Color { alpha: 255, red: 0xCC, green: 0xFF, blue: 0xFF }, // 41
+    Color { alpha: 255, red: 0xCC, green: 0xFF, blue: 0xCC }, // 42
+    Color { alpha: 255, red: 0xFF, green: 0xFF, blue: 0x99 }, // 43
+    Color { alpha: 255, red: 0x99, green: 0xCC, blue: 0xFF }, // 44
+    Color { alpha: 255, red: 0xFF, green: 0x99, blue: 0xCC }, // 45
+    Color { alpha: 255, red: 0xCC, green: 0x99, blue: 0xFF }, // 46
+    Color { alpha: 255, red: 0xFF, green: 0xCC, blue: 0x99 }, // 47
+    Color { alpha: 255, red: 0x33, green: 0x66, blue: 0xFF }, // 48
+    Color { alpha: 255, red: 0x33, green: 0xCC, blue: 0xCC }, // 49
+    Color { alpha: 255, red: 0x99, green: 0xCC, blue: 0x00 }, // 50
+    Color { alpha: 255, red: 0xFF, green: 0xCC, blue: 0x00 }, // 51
+    Color { alpha: 255, red: 0xFF, green: 0x99, blue: 0x00 }, // 52
+    Color { alpha: 255, red: 0xFF, green: 0x66, blue: 0x00 }, // 53
+    Color { alpha: 255, red: 0x66, green: 0x66, blue: 0x99 }, // 54
+    Color { alpha: 255, red: 0x96, green: 0x96, blue: 0x96 }, // 55
+    Color { alpha: 255, red: 0x00, green: 0x33, blue: 0x66 }, // 56
+    Color { alpha: 255, red: 0x33, green: 0x99, blue: 0x66 }, // 57
+    Color { alpha: 255, red: 0x00, green: 0x33, blue: 0x00 }, // 58
+    Color { alpha: 255, red: 0x33, green: 0x33, blue: 0x00 }, // 59
+    Color { alpha: 255, red: 0x99, green: 0x33, blue: 0x00 }, // 60
+    Color { alpha: 255, red: 0x99, green: 0x33, blue: 0x66 }, // 61
+    Color { alpha: 255, red: 0x33, green: 0x33, blue: 0x99 }, // 62
+    Color { alpha: 255, red: 0x33, green: 0x33, blue: 0x33 }, // 63
+    Color { alpha: 255, red: 0x00, green: 0x00, blue: 0x00 }, // 64: System Foreground
+    Color { alpha: 255, red: 0xFF, green: 0xFF, blue: 0xFF }, // 65: System Background
+];
+
 fn get_indexed_color(index: u8) -> Color {
-    match index {
-        // Row 1: Basic colors
-        1 => Color::rgb(0, 0, 0),       // Black
-        2 => Color::rgb(255, 255, 255), // White
-        3 => Color::rgb(255, 0, 0),     // Red
-        4 => Color::rgb(0, 255, 0),     // Green
-        5 => Color::rgb(0, 0, 255),     // Blue
-        6 => Color::rgb(255, 255, 0),   // Yellow
-        7 => Color::rgb(255, 0, 255),   // Magenta
-        8 => Color::rgb(0, 255, 255),   // Cyan
-
-        // Row 2: Dark variants
-        9 => Color::rgb(128, 0, 0),      // Dark Red
-        10 => Color::rgb(0, 128, 0),     // Dark Green
-        11 => Color::rgb(0, 0, 128),     // Dark Blue
-        12 => Color::rgb(128, 128, 0),   // Dark Yellow
-        13 => Color::rgb(128, 0, 128),   // Dark Magenta
-        14 => Color::rgb(0, 128, 128),   // Dark Cyan
-        15 => Color::rgb(192, 192, 192), // Light Gray
-        16 => Color::rgb(128, 128, 128), // Gray
-
-        // Row 3: Light blue variants
-        17 => Color::rgb(153, 153, 255), // Light Blue
-        18 => Color::rgb(153, 51, 102),  // Dark Pink
-        19 => Color::rgb(255, 255, 204), // Light Yellow
-        20 => Color::rgb(204, 255, 255), // Light Cyan
-        21 => Color::rgb(102, 0, 102),   // Dark Purple
-        22 => Color::rgb(255, 128, 128), // Light Red
-        23 => Color::rgb(0, 102, 204),   // Medium Blue
-        24 => Color::rgb(204, 204, 255), // Light Purple
-
-        // Row 4: More variants
-        25 => Color::rgb(0, 0, 128),   // Navy
-        26 => Color::rgb(255, 0, 255), // Fuchsia
-        27 => Color::rgb(255, 255, 0), // Yellow
-        28 => Color::rgb(0, 255, 255), // Aqua
-        29 => Color::rgb(128, 0, 128), // Purple
-        30 => Color::rgb(128, 0, 0),   // Maroon
-        31 => Color::rgb(0, 128, 128), // Teal
-        32 => Color::rgb(0, 0, 255),   // Blue
-
-        // Row 5: Sky blue variants
-        33 => Color::rgb(0, 204, 255),   // Sky Blue
-        34 => Color::rgb(204, 255, 255), // Light Turquoise
-        35 => Color::rgb(204, 255, 204), // Light Green
-        36 => Color::rgb(255, 255, 153), // Light Yellow
-        37 => Color::rgb(153, 204, 255), // Pale Blue
-        38 => Color::rgb(255, 153, 204), // Pink
-        39 => Color::rgb(204, 153, 255), // Lavender
-        40 => Color::rgb(255, 204, 153), // Tan
-
-        // Row 6: Bright variants
-        41 => Color::rgb(51, 102, 255),  // Bright Blue
-        42 => Color::rgb(51, 204, 204),  // Aqua
-        43 => Color::rgb(153, 204, 0),   // Lime
-        44 => Color::rgb(255, 204, 0),   // Gold
-        45 => Color::rgb(255, 153, 0),   // Orange
-        46 => Color::rgb(255, 102, 0),   // Orange Red
-        47 => Color::rgb(102, 102, 153), // Blue Gray
-        48 => Color::rgb(150, 150, 150), // Gray 40%
-
-        // Row 7: Dark variants
-        49 => Color::rgb(0, 51, 102),   // Dark Teal
-        50 => Color::rgb(51, 153, 102), // Sea Green
-        51 => Color::rgb(0, 51, 0),     // Dark Green
-        52 => Color::rgb(51, 51, 0),    // Olive
-        53 => Color::rgb(153, 51, 0),   // Brown
-        54 => Color::rgb(153, 51, 102), // Plum
-        55 => Color::rgb(51, 51, 153),  // Indigo
-        56 => Color::rgb(51, 51, 51),   // Gray 80%
-
-        // Special auto/system colors
-        0 => Color::rgb(0, 0, 0),        // Auto (Black)
-        64 => Color::rgb(192, 192, 192), // System window background
-        65 => Color::rgb(0, 0, 0),       // System auto color
-
-        // Default fallback
-        _ => Color::rgb(0, 0, 0), // Black for unknown indices
-    }
+    INDEXED_COLORS.get(index as usize).copied().unwrap_or(Color::rgb(0, 0, 0))
 }
 
 /// Parse color from XML attributes
