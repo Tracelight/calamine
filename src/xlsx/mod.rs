@@ -694,7 +694,8 @@ impl<RS: Read + Seek> Xlsx<RS> {
                                     _ => {}
                                 }
                             }
-                            self.styles.push(style);
+                            let style_index = self.styles.len() as u32;
+                            self.styles.push(style.with_style_id(style_index));
 
                             // Also add format for backward compatibility
                             self.formats.push(
@@ -822,7 +823,8 @@ impl<RS: Read + Seek> Xlsx<RS> {
                                 style = style.with_number_format(number_format);
                             }
 
-                            self.styles.push(style);
+                            let style_index = self.styles.len() as u32;
+                            self.styles.push(style.with_style_id(style_index));
 
                             self.formats.push(
                                 e.attributes()
