@@ -7,6 +7,11 @@
 mod cells_reader;
 mod comments;
 mod style_parser;
+mod theme;
+
+pub use theme::Theme;
+use theme::parse_theme;
+use style_parser::get_theme_color;
 
 use std::borrow::Cow;
 use std::collections::BTreeMap;
@@ -16,7 +21,7 @@ use std::str::FromStr;
 
 use log::warn;
 use quick_xml::events::attributes::{Attribute, Attributes};
-use quick_xml::events::Event;
+use quick_xml::events::{BytesStart, Event};
 use quick_xml::name::QName;
 use quick_xml::Reader as XmlReader;
 use zip::read::{ZipArchive, ZipFile};
@@ -24,7 +29,7 @@ use zip::result::ZipError;
 
 use crate::datatype::DataRef;
 use crate::formats::{builtin_format_by_id, detect_custom_number_format, CellFormat};
-use crate::style::{ColumnWidth, RowHeight, WorksheetLayout};
+use crate::style::{Color, ColumnWidth, RowHeight, WorksheetLayout};
 use crate::utils::{unescape_entity_to_buffer, unescape_xml};
 use crate::vba::VbaProject;
 use crate::{
@@ -271,6 +276,8 @@ pub struct Xlsx<RS> {
     persons: Option<PersonsMap>,
     /// Reader options
     options: XlsxOptions,
+    /// Workbook theme colors
+    pub theme: Option<Theme>,
 }
 
 /// Xlsx reader options
@@ -301,6 +308,65 @@ impl<RS: Read + Seek> Xlsx<RS> {
                 _ => (),
             }
         }
+        Ok(())
+    }
+
+    fn read_theme(&mut self) -> Result<(), XlsxError> {
+        let theme_target = {
+            let mut xml = match xml_reader(&mut self.zip, "xl/_rels/workbook.xml.rels") {
+                None => return Ok(()),
+                Some(x) => x?,
+            };
+
+            let mut buf = Vec::with_capacity(128);
+            let mut theme_target: Option<String> = None;
+            loop {
+                buf.clear();
+                match xml.read_event_into(&mut buf) {
+                    Ok(Event::Start(ref e) | Event::Empty(ref e))
+                        if e.local_name().as_ref() == b"Relationship" =>
+                    {
+                        let mut target = None;
+                        let mut typ = None;
+                        for a in e.attributes() {
+                            match a.map_err(XlsxError::XmlAttr)? {
+                                Attribute {
+                                    key: QName(b"Target"),
+                                    value: v,
+                                } => target = Some(xml.decoder().decode(&v)?.into_owned()),
+                                Attribute {
+                                    key: QName(b"Type"),
+                                    value: v,
+                                } => typ = Some(xml.decoder().decode(&v)?.into_owned()),
+                                _ => (),
+                            }
+                        }
+                        if let (Some(t), Some(type_name)) = (target, typ) {
+                            if type_name
+                                == "http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme"
+                            {
+                                theme_target = Some(normalize_relationship_target(&t));
+                                break;
+                            }
+                        }
+                    }
+                    Ok(Event::End(ref e)) if e.local_name().as_ref() == b"Relationships" => break,
+                    Ok(Event::Eof) => break,
+                    Err(e) => return Err(XlsxError::Xml(e)),
+                    _ => (),
+                }
+            }
+            theme_target
+        };
+
+        if let Some(target) = theme_target {
+            if let Some(reader) = xml_reader(&mut self.zip, &target) {
+                let mut reader = reader?;
+                let theme = parse_theme(&mut reader)?;
+                self.theme = Some(theme);
+            }
+        }
+
         Ok(())
     }
 
@@ -376,7 +442,7 @@ impl<RS: Read + Seek> Xlsx<RS> {
                     inner_buf.clear();
                     match xml.read_event_into(&mut inner_buf) {
                         Ok(Event::Start(e)) if e.local_name().as_ref() == b"font" => {
-                            let font = style_parser::parse_font(&mut xml, &e)?;
+                            let font = style_parser::parse_font_with_theme(&mut xml, &e, self.theme.as_ref())?;
                             fonts.push(font);
                         }
                         Ok(Event::End(e)) if e.local_name().as_ref() == b"fonts" => break,
@@ -389,7 +455,7 @@ impl<RS: Read + Seek> Xlsx<RS> {
                     inner_buf.clear();
                     match xml.read_event_into(&mut inner_buf) {
                         Ok(Event::Start(e)) if e.local_name().as_ref() == b"fill" => {
-                            let fill = style_parser::parse_fill(&mut xml, &e)?;
+                            let fill = style_parser::parse_fill_with_theme(&mut xml, &e, self.theme.as_ref())?;
                             fills.push(fill);
                         }
                         Ok(Event::End(e)) if e.local_name().as_ref() == b"fills" => break,
@@ -402,7 +468,7 @@ impl<RS: Read + Seek> Xlsx<RS> {
                     inner_buf.clear();
                     match xml.read_event_into(&mut inner_buf) {
                         Ok(Event::Start(e)) if e.local_name().as_ref() == b"border" => {
-                            let border = style_parser::parse_border(&mut xml, &e)?;
+                            let border = style_parser::parse_border_with_theme(&mut xml, &e, self.theme.as_ref())?;
                             borders.push(border);
                         }
                         Ok(Event::End(e)) if e.local_name().as_ref() == b"borders" => break,
@@ -2195,8 +2261,10 @@ impl<RS: Read + Seek> Reader<RS> for Xlsx<RS> {
             threaded_comments: None,
             persons: None,
             options: XlsxOptions::default(),
+            theme: None,
         };
         xlsx.read_shared_strings()?;
+        xlsx.read_theme()?;
         xlsx.read_styles()?;
         let relationships = xlsx.read_relationships()?;
         xlsx.read_workbook(&relationships)?;
@@ -2591,6 +2659,65 @@ fn normalize_relationship_target_from(base_path: &str, target: &str) -> String {
     }
 
     normalized.to_string_lossy().replace('\\', "/")
+}
+
+fn normalize_relationship_target(target: &str) -> String {
+    normalize_relationship_target_from("xl", target)
+}
+
+fn resolve_color(theme: Option<&Theme>, element: &BytesStart<'_>) -> Result<Option<Color>, XlsxError> {
+    let mut rgb: Option<String> = None;
+    let mut theme_idx: Option<usize> = None;
+    let mut tint: f64 = 0.0;
+
+    for attr in element.attributes() {
+        match attr.map_err(XlsxError::XmlAttr)? {
+            Attribute { key: QName(b"rgb"), value } => {
+                rgb = Some(String::from_utf8_lossy(&value).into_owned());
+            }
+            Attribute { key: QName(b"theme"), value } => {
+                if let Ok(idx) = String::from_utf8_lossy(&value).parse::<usize>() {
+                    theme_idx = Some(idx);
+                }
+            }
+            Attribute { key: QName(b"tint"), value } => {
+                if let Ok(t) = String::from_utf8_lossy(&value).parse::<f64>() {
+                    tint = t;
+                }
+            }
+            _ => (),
+        }
+    }
+
+    if let Some(hex) = rgb {
+        let hex = hex.trim_start_matches('#');
+        if hex.len() == 8 {
+            let a = u8::from_str_radix(&hex[0..2], 16).unwrap_or(255);
+            let r = u8::from_str_radix(&hex[2..4], 16).unwrap_or(0);
+            let g = u8::from_str_radix(&hex[4..6], 16).unwrap_or(0);
+            let b = u8::from_str_radix(&hex[6..8], 16).unwrap_or(0);
+            let color = Color::new(a, r, g, b);
+            return Ok(Some(if tint != 0.0 { color.with_tint(tint) } else { color }));
+        } else if hex.len() == 6 {
+            let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or(0);
+            let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or(0);
+            let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or(0);
+            let color = Color::rgb(r, g, b);
+            return Ok(Some(if tint != 0.0 { color.with_tint(tint) } else { color }));
+        }
+    }
+
+    if let Some(idx) = theme_idx {
+        if let Some(theme) = theme {
+            if let Some(color) = theme.color(idx) {
+                return Ok(Some(if tint != 0.0 { color.with_tint(tint) } else { color }));
+            }
+        }
+        let color = get_theme_color(idx as u8);
+        return Ok(Some(if tint != 0.0 { color.with_tint(tint) } else { color }));
+    }
+
+    Ok(None)
 }
 
 fn read_rich_text<RS>(
@@ -4001,6 +4128,7 @@ mod tests {
             threaded_comments: None,
             persons: None,
             options: XlsxOptions::default(),
+            theme: None,
         };
 
         assert!(xlsx.read_shared_strings().is_ok());

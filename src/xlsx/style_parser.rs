@@ -13,9 +13,11 @@ use crate::style::*;
 use crate::utils::unescape_entity_to_buffer;
 use crate::XlsxError;
 
+use super::Theme;
+
 /// Get theme color from Excel's theme color palette
 /// Based on Office Open XML standard theme colors
-fn get_theme_color(theme: u8) -> Color {
+pub(crate) fn get_theme_color(theme: u8) -> Color {
     match theme {
         0 => Color::rgb(255, 255, 255), // Light 1 (White)
         1 => Color::rgb(0, 0, 0),       // Dark 1 (Black)
@@ -160,6 +162,74 @@ fn parse_color(attributes: &[Attribute]) -> Result<Option<Color>, XlsxError> {
             _ => {}
         }
     }
+    Ok(None)
+}
+
+fn parse_color_with_theme(
+    attributes: &[Attribute],
+    theme_data: Option<&Theme>,
+) -> Result<Option<Color>, XlsxError> {
+    let mut rgb: Option<String> = None;
+    let mut theme_idx: Option<u8> = None;
+    let mut indexed: Option<u8> = None;
+    let mut tint: f64 = 0.0;
+
+    for attr in attributes {
+        match attr.key.as_ref() {
+            b"rgb" => {
+                rgb = Some(String::from_utf8_lossy(&attr.value).into_owned());
+            }
+            b"theme" => {
+                if let Ok(value) = String::from_utf8_lossy(&attr.value).parse::<u8>() {
+                    theme_idx = Some(value);
+                }
+            }
+            b"indexed" => {
+                if let Ok(value) = String::from_utf8_lossy(&attr.value).parse::<u8>() {
+                    indexed = Some(value);
+                }
+            }
+            b"tint" => {
+                if let Ok(t) = String::from_utf8_lossy(&attr.value).parse::<f64>() {
+                    tint = t;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if let Some(hex) = rgb {
+        let hex = hex.trim_start_matches('#');
+        if hex.len() == 8 {
+            let a = u8::from_str_radix(&hex[0..2], 16).unwrap_or(255);
+            let r = u8::from_str_radix(&hex[2..4], 16).unwrap_or(0);
+            let g = u8::from_str_radix(&hex[4..6], 16).unwrap_or(0);
+            let b = u8::from_str_radix(&hex[6..8], 16).unwrap_or(0);
+            let color = Color::new(a, r, g, b);
+            return Ok(Some(if tint != 0.0 { color.with_tint(tint) } else { color }));
+        } else if hex.len() == 6 {
+            let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or(0);
+            let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or(0);
+            let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or(0);
+            let color = Color::rgb(r, g, b);
+            return Ok(Some(if tint != 0.0 { color.with_tint(tint) } else { color }));
+        }
+    }
+
+    if let Some(idx) = theme_idx {
+        let color = if let Some(theme) = theme_data {
+            theme.color(idx as usize).unwrap_or_else(|| get_theme_color(idx))
+        } else {
+            get_theme_color(idx)
+        };
+        return Ok(Some(if tint != 0.0 { color.with_tint(tint) } else { color }));
+    }
+
+    if let Some(idx) = indexed {
+        let color = get_indexed_color(idx);
+        return Ok(Some(if tint != 0.0 { color.with_tint(tint) } else { color }));
+    }
+
     Ok(None)
 }
 
@@ -408,6 +478,119 @@ pub fn parse_font<RS: BufRead>(
     Ok(font)
 }
 
+pub fn parse_font_with_theme<RS: BufRead>(
+    xml: &mut Reader<RS>,
+    _start_elem: &BytesStart,
+    theme: Option<&Theme>,
+) -> Result<Font, XlsxError> {
+    let mut font = Font::new();
+    let mut buf = Vec::new();
+
+    loop {
+        buf.clear();
+        match xml.read_event_into(&mut buf) {
+            Ok(Event::Start(ref e)) => match e.local_name().as_ref() {
+                b"name" => {
+                    let mut name = None;
+                    for attr in e.attributes() {
+                        let attr = attr?;
+                        if attr.key.as_ref() == b"val" {
+                            name = Some(String::from_utf8_lossy(&attr.value).to_string());
+                            break;
+                        }
+                    }
+                    if name.is_none() {
+                        name = read_string(xml, QName(b"name"))?;
+                    } else {
+                        xml.read_to_end_into(e.name(), &mut Vec::new())?;
+                    }
+                    if let Some(n) = name {
+                        font = font.with_name(n);
+                    }
+                }
+                b"sz" => {
+                    let mut size_str = None;
+                    for attr in e.attributes() {
+                        let attr = attr?;
+                        if attr.key.as_ref() == b"val" {
+                            size_str = Some(String::from_utf8_lossy(&attr.value).to_string());
+                            break;
+                        }
+                    }
+                    if size_str.is_none() {
+                        size_str = read_string(xml, QName(b"sz"))?;
+                    } else {
+                        xml.read_to_end_into(e.name(), &mut Vec::new())?;
+                    }
+                    if let Some(s) = size_str {
+                        if let Ok(size) = s.parse::<f64>() {
+                            font = font.with_size(size);
+                        }
+                    }
+                }
+                b"b" => {
+                    let mut weight = FontWeight::Bold;
+                    for attr in e.attributes() {
+                        let attr = attr?;
+                        if attr.key.as_ref() == b"val" {
+                            let val_str = String::from_utf8_lossy(&attr.value);
+                            weight = parse_font_weight(&val_str);
+                            break;
+                        }
+                    }
+                    font = font.with_weight(weight);
+                }
+                b"i" => {
+                    let mut style = FontStyle::Italic;
+                    for attr in e.attributes() {
+                        let attr = attr?;
+                        if attr.key.as_ref() == b"val" {
+                            let val_str = String::from_utf8_lossy(&attr.value);
+                            style = parse_font_style(&val_str);
+                            break;
+                        }
+                    }
+                    font = font.with_style(style);
+                }
+                b"u" => {
+                    let mut underline_style = UnderlineStyle::Single;
+                    for attr in e.attributes() {
+                        let attr = attr?;
+                        if attr.key.as_ref() == b"val" {
+                            let val_str = String::from_utf8_lossy(&attr.value);
+                            underline_style = parse_underline_style(&val_str);
+                            break;
+                        }
+                    }
+                    font = font.with_underline(underline_style);
+                }
+                b"strike" => {
+                    font = font.with_strikethrough(true);
+                }
+                b"color" => {
+                    if let Some(color) =
+                        parse_color_with_theme(&e.attributes().collect::<Result<Vec<_>, _>>()?, theme)?
+                    {
+                        font = font.with_color(color);
+                    }
+                }
+                b"family" => {
+                    if let Some(family) = read_string(xml, QName(b"family"))? {
+                        font = font.with_family(family);
+                    }
+                }
+                _ => {}
+            },
+            Ok(Event::End(ref e)) if e.local_name().as_ref() == b"font" => break,
+            Ok(Event::Eof) => return Err(XlsxError::XmlEof("font")),
+            Err(e) => return Err(XlsxError::Xml(e)),
+            _ => {}
+        }
+    }
+
+    Ok(font)
+}
+
 /// Parse fill element
 pub fn parse_fill<RS: BufRead>(
     xml: &mut Reader<RS>,
@@ -452,6 +635,53 @@ pub fn parse_fill<RS: BufRead>(
                 b"bgColor" => {
                     if let Some(color) =
                         parse_color(&e.attributes().collect::<Result<Vec<_>, _>>()?)?
+                    {
+                        fill = fill.with_background_color(color);
+                    }
+                }
+                _ => {}
+            },
+            Ok(Event::End(ref e)) if e.local_name().as_ref() == b"fill" => break,
+            Ok(Event::Eof) => return Err(XlsxError::XmlEof("fill")),
+            Err(e) => return Err(XlsxError::Xml(e)),
+            _ => {}
+        }
+    }
+
+    Ok(fill)
+}
+
+pub fn parse_fill_with_theme<RS: BufRead>(
+    xml: &mut Reader<RS>,
+    _start_elem: &BytesStart,
+    theme: Option<&Theme>,
+) -> Result<Fill, XlsxError> {
+    let mut fill = Fill::new();
+    let mut buf = Vec::new();
+
+    loop {
+        buf.clear();
+        match xml.read_event_into(&mut buf) {
+            Ok(Event::Start(ref e)) => match e.local_name().as_ref() {
+                b"patternFill" => {
+                    for attr in e.attributes() {
+                        let attr = attr?;
+                        if attr.key.as_ref() == b"patternType" {
+                            let pattern_str = String::from_utf8_lossy(&attr.value);
+                            fill = fill.with_pattern(parse_fill_pattern(&pattern_str));
+                        }
+                    }
+                }
+                b"fgColor" => {
+                    if let Some(color) =
+                        parse_color_with_theme(&e.attributes().collect::<Result<Vec<_>, _>>()?, theme)?
+                    {
+                        fill = fill.with_foreground_color(color);
+                    }
+                }
+                b"bgColor" => {
+                    if let Some(color) =
+                        parse_color_with_theme(&e.attributes().collect::<Result<Vec<_>, _>>()?, theme)?
                     {
                         fill = fill.with_background_color(color);
                     }
@@ -551,6 +781,99 @@ pub fn parse_border<RS: BufRead>(
                             b"bottom" => borders.bottom = border,
                             b"diagonal" => {
                                 // Check if it's diagonal down or up
+                                for attr in e.attributes() {
+                                    let attr = attr?;
+                                    if attr.key.as_ref() == b"diagonalDown" {
+                                        borders.diagonal_down = border.clone();
+                                    } else if attr.key.as_ref() == b"diagonalUp" {
+                                        borders.diagonal_up = border.clone();
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Ok(Event::End(ref e)) if e.local_name().as_ref() == b"border" => break,
+            Ok(Event::Eof) => return Err(XlsxError::XmlEof("border")),
+            Err(e) => return Err(XlsxError::Xml(e)),
+            _ => {}
+        }
+    }
+
+    Ok(borders)
+}
+
+pub fn parse_border_with_theme<RS: BufRead>(
+    xml: &mut Reader<RS>,
+    _start_elem: &BytesStart,
+    theme: Option<&Theme>,
+) -> Result<Borders, XlsxError> {
+    let mut borders = Borders::new();
+    let mut buf = Vec::new();
+
+    loop {
+        buf.clear();
+        match xml.read_event_into(&mut buf) {
+            Ok(Event::Start(ref e)) => {
+                match e.local_name().as_ref() {
+                    b"left" | b"right" | b"top" | b"bottom" | b"diagonal" => {
+                        let mut style = BorderStyle::None;
+                        let mut color = None;
+
+                        for attr in e.attributes() {
+                            let attr = attr?;
+                            if attr.key.as_ref() == b"style" {
+                                let style_str = String::from_utf8_lossy(&attr.value);
+                                style = parse_border_style(&style_str);
+                            }
+                        }
+
+                        if let Some(border_color) =
+                            parse_color_with_theme(&e.attributes().collect::<Result<Vec<_>, _>>()?, theme)?
+                        {
+                            color = Some(border_color);
+                        }
+
+                        let mut inner_buf = Vec::new();
+                        loop {
+                            inner_buf.clear();
+                            match xml.read_event_into(&mut inner_buf) {
+                                Ok(Event::Start(ref inner_e)) => {
+                                    if inner_e.local_name().as_ref() == b"color" {
+                                        if let Some(border_color) = parse_color_with_theme(
+                                            &inner_e.attributes().collect::<Result<Vec<_>, _>>()?,
+                                            theme,
+                                        )? {
+                                            color = Some(border_color);
+                                        }
+                                    }
+                                }
+                                Ok(Event::End(ref inner_e))
+                                    if inner_e.local_name().as_ref() == e.local_name().as_ref() =>
+                                {
+                                    break
+                                }
+                                Ok(Event::Eof) => return Err(XlsxError::XmlEof("border side")),
+                                Err(e) => return Err(XlsxError::Xml(e)),
+                                _ => {}
+                            }
+                        }
+
+                        let border = if let Some(c) = color {
+                            Border::with_color(style, c)
+                        } else {
+                            Border::new(style)
+                        };
+
+                        match e.local_name().as_ref() {
+                            b"left" => borders.left = border,
+                            b"right" => borders.right = border,
+                            b"top" => borders.top = border,
+                            b"bottom" => borders.bottom = border,
+                            b"diagonal" => {
                                 for attr in e.attributes() {
                                     let attr = attr?;
                                     if attr.key.as_ref() == b"diagonalDown" {

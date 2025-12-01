@@ -65,6 +65,32 @@ impl Color {
     pub fn is_white(&self) -> bool {
         self.red == 255 && self.green == 255 && self.blue == 255
     }
+
+    /// Returns a tinted version of the color based on Excel tint adjustment.
+    /// According to the OOXML spec, tint is applied to the lightness component in HLS color space.
+    pub fn with_tint(self, tint: f64) -> Self {
+        if tint == 0.0 {
+            return self;
+        }
+
+        let (h, l, s) = rgb_to_hls(self.red, self.green, self.blue);
+
+        let adjusted_l = if tint < 0.0 {
+            l * (1.0 + tint)
+        } else {
+            l * (1.0 - tint) + 255.0 * tint
+        };
+
+        let adjusted_l = adjusted_l.clamp(0.0, 255.0);
+        let (r, g, b) = hls_to_rgb(h, adjusted_l, s);
+
+        Self {
+            alpha: self.alpha,
+            red: r,
+            green: g,
+            blue: b,
+        }
+    }
 }
 
 impl fmt::Display for Color {
@@ -915,6 +941,87 @@ impl Style {
                     || a.shrink_to_fit
             }))
     }
+}
+
+fn rgb_to_hls(r: u8, g: u8, b: u8) -> (f64, f64, f64) {
+    let r_norm = r as f64 / 255.0;
+    let g_norm = g as f64 / 255.0;
+    let b_norm = b as f64 / 255.0;
+
+    let max = r_norm.max(g_norm).max(b_norm);
+    let min = r_norm.min(g_norm).min(b_norm);
+    let delta = max - min;
+
+    let l = (max + min) / 2.0;
+
+    let (h, s) = if delta == 0.0 {
+        (0.0, 0.0)
+    } else {
+        let s = if l < 0.5 {
+            delta / (max + min)
+        } else {
+            delta / (2.0 - max - min)
+        };
+
+        let h = if max == r_norm {
+            ((g_norm - b_norm) / delta + if g_norm < b_norm { 6.0 } else { 0.0 }) / 6.0
+        } else if max == g_norm {
+            ((b_norm - r_norm) / delta + 2.0) / 6.0
+        } else {
+            ((r_norm - g_norm) / delta + 4.0) / 6.0
+        };
+
+        (h * 360.0, s)
+    };
+
+    (h, l * 255.0, s * 255.0)
+}
+
+fn hls_to_rgb(h: f64, l: f64, s: f64) -> (u8, u8, u8) {
+    let l_norm = l / 255.0;
+    let s_norm = s / 255.0;
+
+    if s_norm == 0.0 {
+        let val = (l_norm * 255.0).round() as u8;
+        return (val, val, val);
+    }
+
+    let q = if l_norm < 0.5 {
+        l_norm * (1.0 + s_norm)
+    } else {
+        l_norm + s_norm - l_norm * s_norm
+    };
+    let p = 2.0 * l_norm - q;
+
+    let h_norm = h / 360.0;
+
+    let hue_to_rgb = |mut t: f64| -> f64 {
+        if t < 0.0 {
+            t += 1.0;
+        }
+        if t > 1.0 {
+            t -= 1.0;
+        }
+        if t < 1.0 / 6.0 {
+            p + (q - p) * 6.0 * t
+        } else if t < 0.5 {
+            q
+        } else if t < 2.0 / 3.0 {
+            p + (q - p) * (2.0 / 3.0 - t) * 6.0
+        } else {
+            p
+        }
+    };
+
+    let r = (hue_to_rgb(h_norm + 1.0 / 3.0) * 255.0)
+        .round()
+        .clamp(0.0, 255.0) as u8;
+    let g = (hue_to_rgb(h_norm) * 255.0).round().clamp(0.0, 255.0) as u8;
+    let b = (hue_to_rgb(h_norm - 1.0 / 3.0) * 255.0)
+        .round()
+        .clamp(0.0, 255.0) as u8;
+
+    (r, g, b)
 }
 
 #[cfg(test)]
