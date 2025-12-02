@@ -11,7 +11,6 @@ mod theme;
 
 pub use theme::Theme;
 use theme::parse_theme;
-use style_parser::get_theme_color;
 
 use std::borrow::Cow;
 use std::collections::BTreeMap;
@@ -21,7 +20,7 @@ use std::str::FromStr;
 
 use log::warn;
 use quick_xml::events::attributes::{Attribute, Attributes};
-use quick_xml::events::{BytesStart, Event};
+use quick_xml::events::Event;
 use quick_xml::name::QName;
 use quick_xml::Reader as XmlReader;
 use zip::read::{ZipArchive, ZipFile};
@@ -49,6 +48,24 @@ pub const MAX_ROWS: u32 = 1_048_576;
 
 /// Maximum number of columns allowed in an XLSX file.
 pub const MAX_COLUMNS: u32 = 16_384;
+
+#[inline]
+fn parse_hex_digit(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        _ => None,
+    }
+}
+
+#[inline]
+fn parse_hex_byte(bytes: &[u8]) -> Option<u8> {
+    if bytes.len() != 2 { return None; }
+    let hi = parse_hex_digit(bytes[0])?;
+    let lo = parse_hex_digit(bytes[1])?;
+    Some(hi * 16 + lo)
+}
 
 /// An enum for Xlsx specific errors.
 #[derive(Debug)]
@@ -278,6 +295,10 @@ pub struct Xlsx<RS> {
     options: XlsxOptions,
     /// Workbook theme colors
     pub theme: Option<Theme>,
+    /// Custom indexed colors from styles.xml (overrides default palette)
+    indexed_colors: Option<Vec<Color>>,
+    /// Differential formatting styles (for conditional formatting)
+    pub dxfs: Vec<Style>,
 }
 
 /// Xlsx reader options
@@ -370,6 +391,88 @@ impl<RS: Read + Seek> Xlsx<RS> {
         Ok(())
     }
 
+    fn read_indexed_colors(&mut self) -> Result<(), XlsxError> {
+        let mut xml = match xml_reader(&mut self.zip, "xl/styles.xml") {
+            None => return Ok(()),
+            Some(x) => x?,
+        };
+
+        let mut buf = Vec::with_capacity(256);
+        let mut inner_buf = Vec::with_capacity(64);
+        loop {
+            buf.clear();
+            match xml.read_event_into(&mut buf) {
+                Ok(Event::Start(e)) if e.local_name().as_ref() == b"colors" => {
+                    loop {
+                        inner_buf.clear();
+                        match xml.read_event_into(&mut inner_buf) {
+                            Ok(Event::Start(e)) if e.local_name().as_ref() == b"indexedColors" => {
+                                let mut colors = Vec::with_capacity(64);
+                                let mut color_buf = Vec::with_capacity(64);
+                                loop {
+                                    color_buf.clear();
+                                    match xml.read_event_into(&mut color_buf) {
+                                        Ok(Event::Start(e) | Event::Empty(e))
+                                            if e.local_name().as_ref() == b"rgbColor" =>
+                                        {
+                                            let mut color = Color::rgb(0, 0, 0);
+                                            for a in e.attributes() {
+                                                if let Ok(Attribute {
+                                                    key: QName(b"rgb"),
+                                                    value,
+                                                }) = a
+                                                {
+                                                    let bytes = value.as_ref();
+                                                    let bytes = if bytes.len() >= 2 && bytes[0] == b'0' && bytes[1] == b'0' {
+                                                        &bytes[2..]
+                                                    } else {
+                                                        bytes
+                                                    };
+                                                    if bytes.len() >= 6 {
+                                                        if let (Some(r), Some(g), Some(b)) = (
+                                                            parse_hex_byte(&bytes[0..2]),
+                                                            parse_hex_byte(&bytes[2..4]),
+                                                            parse_hex_byte(&bytes[4..6]),
+                                                        ) {
+                                                            color = Color::rgb(r, g, b);
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            colors.push(color);
+                                        }
+                                        Ok(Event::End(e))
+                                            if e.local_name().as_ref() == b"indexedColors" =>
+                                        {
+                                            break
+                                        }
+                                        Ok(Event::Eof) => {
+                                            return Err(XlsxError::XmlEof("indexedColors"))
+                                        }
+                                        Err(e) => return Err(XlsxError::Xml(e)),
+                                        _ => (),
+                                    }
+                                }
+                                if !colors.is_empty() {
+                                    self.indexed_colors = Some(colors);
+                                }
+                            }
+                            Ok(Event::End(e)) if e.local_name().as_ref() == b"colors" => break,
+                            Ok(Event::Eof) => return Err(XlsxError::XmlEof("colors")),
+                            Err(e) => return Err(XlsxError::Xml(e)),
+                            _ => (),
+                        }
+                    }
+                }
+                Ok(Event::End(e)) if e.local_name().as_ref() == b"styleSheet" => break,
+                Ok(Event::Eof) => break,
+                Err(e) => return Err(XlsxError::Xml(e)),
+                _ => (),
+            }
+        }
+        Ok(())
+    }
+
     fn read_styles(&mut self) -> Result<(), XlsxError> {
         let mut xml = match xml_reader(&mut self.zip, "xl/styles.xml") {
             None => return Ok(()),
@@ -443,7 +546,7 @@ impl<RS: Read + Seek> Xlsx<RS> {
                     inner_buf.clear();
                     match xml.read_event_into(&mut inner_buf) {
                         Ok(Event::Start(e)) if e.local_name().as_ref() == b"font" => {
-                            let font = style_parser::parse_font_with_theme(&mut xml, &e, self.theme.as_ref())?;
+                            let font = style_parser::parse_font_with_theme(&mut xml, &e, self.theme.as_ref(), self.indexed_colors.as_deref())?;
                             fonts.push(font);
                         }
                         Ok(Event::End(e)) if e.local_name().as_ref() == b"fonts" => break,
@@ -456,7 +559,7 @@ impl<RS: Read + Seek> Xlsx<RS> {
                     inner_buf.clear();
                     match xml.read_event_into(&mut inner_buf) {
                         Ok(Event::Start(e)) if e.local_name().as_ref() == b"fill" => {
-                            let fill = style_parser::parse_fill_with_theme(&mut xml, &e, self.theme.as_ref())?;
+                            let fill = style_parser::parse_fill_with_theme(&mut xml, &e, self.theme.as_ref(), self.indexed_colors.as_deref())?;
                             fills.push(fill);
                         }
                         Ok(Event::End(e)) if e.local_name().as_ref() == b"fills" => break,
@@ -469,7 +572,7 @@ impl<RS: Read + Seek> Xlsx<RS> {
                     inner_buf.clear();
                     match xml.read_event_into(&mut inner_buf) {
                         Ok(Event::Start(e)) if e.local_name().as_ref() == b"border" => {
-                            let border = style_parser::parse_border_with_theme(&mut xml, &e, self.theme.as_ref())?;
+                            let border = style_parser::parse_border_with_theme(&mut xml, &e, self.theme.as_ref(), self.indexed_colors.as_deref())?;
                             borders.push(border);
                         }
                         Ok(Event::End(e)) if e.local_name().as_ref() == b"borders" => break,
@@ -613,7 +716,7 @@ impl<RS: Read + Seek> Xlsx<RS> {
                             }
 
                             if let Some(nfid) = num_fmt_id {
-                                let mut fmt_id_bytes = nfid.to_string().into_bytes();
+                                let fmt_id_bytes = nfid.to_string().into_bytes();
                                 let format_code = match number_formats.get(&fmt_id_bytes) {
                                     Some(fmt) => fmt.clone(),
                                     None => {
@@ -840,6 +943,72 @@ impl<RS: Read + Seek> Xlsx<RS> {
                         }
                         Ok(Event::End(e)) if e.local_name().as_ref() == b"cellXfs" => break,
                         Ok(Event::Eof) => return Err(XlsxError::XmlEof("cellXfs")),
+                        Err(e) => return Err(XlsxError::Xml(e)),
+                        _ => (),
+                    }
+                },
+                Ok(Event::Start(e)) if e.local_name().as_ref() == b"dxfs" => loop {
+                    inner_buf.clear();
+                    match xml.read_event_into(&mut inner_buf) {
+                        Ok(Event::Start(e)) if e.local_name().as_ref() == b"dxf" => {
+                            let mut style = Style::new();
+                            let mut dxf_buf = Vec::new();
+                            loop {
+                                dxf_buf.clear();
+                                match xml.read_event_into(&mut dxf_buf) {
+                                    Ok(Event::Start(ref inner_e)) => {
+                                        match inner_e.local_name().as_ref() {
+                                            b"font" => {
+                                                let font = style_parser::parse_font_with_theme(
+                                                    &mut xml,
+                                                    inner_e,
+                                                    self.theme.as_ref(),
+                                                    self.indexed_colors.as_deref(),
+                                                )?;
+                                                style = style.with_font(font);
+                                            }
+                                            b"fill" => {
+                                                let fill = style_parser::parse_fill_with_theme(
+                                                    &mut xml,
+                                                    inner_e,
+                                                    self.theme.as_ref(),
+                                                    self.indexed_colors.as_deref(),
+                                                )?;
+                                                style = style.with_fill(fill);
+                                            }
+                                            b"border" => {
+                                                let border = style_parser::parse_border_with_theme(
+                                                    &mut xml,
+                                                    inner_e,
+                                                    self.theme.as_ref(),
+                                                    self.indexed_colors.as_deref(),
+                                                )?;
+                                                style = style.with_borders(border);
+                                            }
+                                            b"alignment" => {
+                                                let alignment =
+                                                    style_parser::parse_alignment(&mut xml, inner_e)?;
+                                                style = style.with_alignment(alignment);
+                                            }
+                                            _ => {
+                                                xml.read_to_end_into(inner_e.name(), &mut Vec::new())?;
+                                            }
+                                        }
+                                    }
+                                    Ok(Event::End(ref inner_e))
+                                        if inner_e.local_name().as_ref() == b"dxf" =>
+                                    {
+                                        break
+                                    }
+                                    Ok(Event::Eof) => return Err(XlsxError::XmlEof("dxf")),
+                                    Err(e) => return Err(XlsxError::Xml(e)),
+                                    _ => {}
+                                }
+                            }
+                            self.dxfs.push(style);
+                        }
+                        Ok(Event::End(e)) if e.local_name().as_ref() == b"dxfs" => break,
+                        Ok(Event::Eof) => return Err(XlsxError::XmlEof("dxfs")),
                         Err(e) => return Err(XlsxError::Xml(e)),
                         _ => (),
                     }
@@ -2476,9 +2645,12 @@ impl<RS: Read + Seek> Reader<RS> for Xlsx<RS> {
             persons: None,
             options: XlsxOptions::default(),
             theme: None,
+            indexed_colors: None,
+            dxfs: Vec::new(),
         };
         xlsx.read_shared_strings()?;
         xlsx.read_theme()?;
+        xlsx.read_indexed_colors()?;
         xlsx.read_styles()?;
         let relationships = xlsx.read_relationships()?;
         xlsx.read_workbook(&relationships)?;
@@ -2877,61 +3049,6 @@ fn normalize_relationship_target_from(base_path: &str, target: &str) -> String {
 
 fn normalize_relationship_target(target: &str) -> String {
     normalize_relationship_target_from("xl", target)
-}
-
-fn resolve_color(theme: Option<&Theme>, element: &BytesStart<'_>) -> Result<Option<Color>, XlsxError> {
-    let mut rgb: Option<String> = None;
-    let mut theme_idx: Option<usize> = None;
-    let mut tint: f64 = 0.0;
-
-    for attr in element.attributes() {
-        match attr.map_err(XlsxError::XmlAttr)? {
-            Attribute { key: QName(b"rgb"), value } => {
-                rgb = Some(String::from_utf8_lossy(&value).into_owned());
-            }
-            Attribute { key: QName(b"theme"), value } => {
-                if let Ok(idx) = String::from_utf8_lossy(&value).parse::<usize>() {
-                    theme_idx = Some(idx);
-                }
-            }
-            Attribute { key: QName(b"tint"), value } => {
-                if let Ok(t) = String::from_utf8_lossy(&value).parse::<f64>() {
-                    tint = t;
-                }
-            }
-            _ => (),
-        }
-    }
-
-    if let Some(hex) = rgb {
-        let hex = hex.trim_start_matches('#');
-        if hex.len() == 8 {
-            let a = u8::from_str_radix(&hex[0..2], 16).unwrap_or(255);
-            let r = u8::from_str_radix(&hex[2..4], 16).unwrap_or(0);
-            let g = u8::from_str_radix(&hex[4..6], 16).unwrap_or(0);
-            let b = u8::from_str_radix(&hex[6..8], 16).unwrap_or(0);
-            let color = Color::new(a, r, g, b);
-            return Ok(Some(if tint != 0.0 { color.with_tint(tint) } else { color }));
-        } else if hex.len() == 6 {
-            let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or(0);
-            let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or(0);
-            let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or(0);
-            let color = Color::rgb(r, g, b);
-            return Ok(Some(if tint != 0.0 { color.with_tint(tint) } else { color }));
-        }
-    }
-
-    if let Some(idx) = theme_idx {
-        if let Some(theme) = theme {
-            if let Some(color) = theme.color(idx) {
-                return Ok(Some(if tint != 0.0 { color.with_tint(tint) } else { color }));
-            }
-        }
-        let color = get_theme_color(idx as u8);
-        return Ok(Some(if tint != 0.0 { color.with_tint(tint) } else { color }));
-    }
-
-    Ok(None)
 }
 
 fn read_rich_text<RS>(
@@ -3733,45 +3850,6 @@ fn offset_range(range: &[u8], offset: (i64, i64), buf: &mut Vec<u8>) -> Result<(
     }
 }
 
-/// Convert row and column coordinates to cell name
-///
-/// # Parameters
-///
-/// - `coordinates`: A tuple of (row, column) coordinates (0-indexed).
-///
-/// # Returns
-///
-/// A vector of bytes representing the cell name (e.g., "A1", "B2").
-///
-fn coordinate_to_name(coordinates: (u32, u32)) -> Result<Vec<u8>, XlsxError> {
-    let (row, col) = coordinates;
-    let mut buf = Vec::new();
-    column_number_to_name(col, &mut buf)?;
-    buf.extend((row + 1).to_string().into_bytes());
-    Ok(buf)
-}
-
-/// Advance the cell name by the offset
-///
-/// This function advances the cell name by the offset.
-///
-/// # Parameters
-///
-/// - `name`: The cell name to advance.
-/// - `offset`: The offset to advance the cell name by.
-///
-/// # Returns
-///
-/// A vector of bytes representing the advanced cell name.
-///
-pub fn offset_cell_name(name: &[u8], offset: (i64, i64)) -> Result<Vec<u8>, XlsxError> {
-    let cell = get_row_column(name.to_vec().as_slice())?;
-    coordinate_to_name((
-        (cell.0 as i64 + offset.0) as u32,
-        (cell.1 as i64 + offset.1) as u32,
-    ))
-}
-
 /// Replace all valid cell names in the string by the offset
 ///
 /// This function replaces all valid cell names in the string by the offset.
@@ -4343,6 +4421,8 @@ mod tests {
             persons: None,
             options: XlsxOptions::default(),
             theme: None,
+            indexed_colors: None,
+            dxfs: Vec::new(),
         };
 
         assert!(xlsx.read_shared_strings().is_ok());
