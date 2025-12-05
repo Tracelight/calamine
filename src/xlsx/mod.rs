@@ -299,6 +299,8 @@ pub struct Xlsx<RS> {
     indexed_colors: Option<Vec<Color>>,
     /// Differential formatting styles (for conditional formatting)
     pub dxfs: Vec<Style>,
+    /// Default cell style (Normal style from cellStyleXfs[0])
+    pub default_style: Option<Style>,
 }
 
 /// Xlsx reader options
@@ -641,7 +643,10 @@ impl<RS: Read + Seek> Xlsx<RS> {
 
                             cell_style_xfs.push(style);
                         }
-                        Ok(Event::End(e)) if e.local_name().as_ref() == b"cellStyleXfs" => break,
+                        Ok(Event::End(e)) if e.local_name().as_ref() == b"cellStyleXfs" => {
+                            self.default_style = cell_style_xfs.first().cloned();
+                            break;
+                        }
                         Ok(Event::Eof) => return Err(XlsxError::XmlEof("cellStyleXfs")),
                         Err(e) => return Err(XlsxError::Xml(e)),
                         _ => (),
@@ -2647,6 +2652,7 @@ impl<RS: Read + Seek> Reader<RS> for Xlsx<RS> {
             theme: None,
             indexed_colors: None,
             dxfs: Vec::new(),
+            default_style: None,
         };
         xlsx.read_shared_strings()?;
         xlsx.read_theme()?;
@@ -4423,6 +4429,7 @@ mod tests {
             theme: None,
             indexed_colors: None,
             dxfs: Vec::new(),
+            default_style: None,
         };
 
         assert!(xlsx.read_shared_strings().is_ok());
