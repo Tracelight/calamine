@@ -28,7 +28,9 @@ use zip::result::ZipError;
 
 use crate::datatype::DataRef;
 use crate::formats::{builtin_format_by_id, detect_custom_number_format, CellFormat};
-use crate::style::{Color, ColumnWidth, RowHeight, WorksheetLayout};
+use crate::style::{
+    Color, ColumnWidth, FreezePanes, PaneState, RowHeight, SheetSettings, WorksheetLayout,
+};
 use crate::utils::{unescape_entity_to_buffer, unescape_xml};
 use crate::vba::VbaProject;
 use crate::{
@@ -65,6 +67,68 @@ fn parse_hex_byte(bytes: &[u8]) -> Option<u8> {
     let hi = parse_hex_digit(bytes[0])?;
     let lo = parse_hex_digit(bytes[1])?;
     Some(hi * 16 + lo)
+}
+
+fn parse_color_from_attrs(
+    attributes: &Attributes,
+    theme: Option<&Theme>,
+) -> Option<Color> {
+    let mut rgb_bytes: Option<Cow<'_, [u8]>> = None;
+    let mut theme_idx: Option<u8> = None;
+    let mut tint: f64 = 0.0;
+
+    for attr in attributes.clone() {
+        if let Ok(attr) = attr {
+            match attr.key.as_ref() {
+                b"rgb" => rgb_bytes = Some(attr.value),
+                b"theme" => {
+                    if let Ok(s) = std::str::from_utf8(&attr.value) {
+                        theme_idx = s.parse().ok();
+                    }
+                }
+                b"tint" => {
+                    if let Ok(s) = std::str::from_utf8(&attr.value) {
+                        tint = s.parse().unwrap_or(0.0);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    if let Some(bytes) = rgb_bytes {
+        let bytes_slice: &[u8] = if bytes.first() == Some(&b'#') { &bytes[1..] } else { &bytes };
+        if bytes_slice.len() == 8 {
+            if let (Some(a), Some(r), Some(g), Some(b)) = (
+                parse_hex_byte(&bytes_slice[0..2]),
+                parse_hex_byte(&bytes_slice[2..4]),
+                parse_hex_byte(&bytes_slice[4..6]),
+                parse_hex_byte(&bytes_slice[6..8]),
+            ) {
+                let color = Color::new(a, r, g, b);
+                return Some(if tint != 0.0 { color.with_tint(tint) } else { color });
+            }
+        } else if bytes_slice.len() == 6 {
+            if let (Some(r), Some(g), Some(b)) = (
+                parse_hex_byte(&bytes_slice[0..2]),
+                parse_hex_byte(&bytes_slice[2..4]),
+                parse_hex_byte(&bytes_slice[4..6]),
+            ) {
+                let color = Color::rgb(r, g, b);
+                return Some(if tint != 0.0 { color.with_tint(tint) } else { color });
+            }
+        }
+    }
+
+    if let Some(idx) = theme_idx {
+        if let Some(theme_data) = theme {
+            if let Some(color) = theme_data.color(idx as usize) {
+                return Some(if tint != 0.0 { color.with_tint(tint) } else { color });
+            }
+        }
+    }
+
+    None
 }
 
 /// An enum for Xlsx specific errors.
@@ -2201,12 +2265,124 @@ impl<RS: Read + Seek> Xlsx<RS> {
             .ok_or_else(|| XlsxError::WorksheetNotFound(name.into()))??;
 
         let mut layout = WorksheetLayout::new();
+        let mut sheet_settings = SheetSettings::default();
         let mut buf = Vec::with_capacity(1024);
 
         loop {
             buf.clear();
             match xml.read_event_into(&mut buf) {
-                Ok(Event::Start(ref e)) if e.local_name().as_ref() == b"sheetFormatPr" => {
+                Ok(Event::Start(ref e)) if e.local_name().as_ref() == b"sheetPr" => {
+                    loop {
+                        buf.clear();
+                        match xml.read_event_into(&mut buf) {
+                            Ok(Event::Start(ref inner_e) | Event::Empty(ref inner_e))
+                                if inner_e.local_name().as_ref() == b"tabColor" =>
+                            {
+                                sheet_settings.tab_color =
+                                    parse_color_from_attrs(&inner_e.attributes(), self.theme.as_ref());
+                            }
+                            Ok(Event::End(ref end_e))
+                                if end_e.local_name().as_ref() == b"sheetPr" =>
+                            {
+                                break;
+                            }
+                            Ok(Event::Eof) => break,
+                            Err(e) => return Err(XlsxError::Xml(e)),
+                            _ => {}
+                        }
+                    }
+                }
+                Ok(Event::Start(ref e)) if e.local_name().as_ref() == b"sheetViews" => {
+                    // Parse sheetViews for gridlines and freeze panes
+                    loop {
+                        buf.clear();
+                        match xml.read_event_into(&mut buf) {
+                            Ok(Event::Empty(ref view_e))
+                                if view_e.local_name().as_ref() == b"sheetView" =>
+                            {
+                                for attr in view_e.attributes() {
+                                    let attr = attr.map_err(XlsxError::XmlAttr)?;
+                                    if attr.key.as_ref() == b"showGridLines" {
+                                        sheet_settings.show_grid_lines =
+                                            attr.value.as_ref() != b"0" && attr.value.as_ref() != b"false";
+                                    }
+                                }
+                            }
+                            Ok(Event::Start(ref view_e))
+                                if view_e.local_name().as_ref() == b"sheetView" =>
+                            {
+                                for attr in view_e.attributes() {
+                                    let attr = attr.map_err(XlsxError::XmlAttr)?;
+                                    if attr.key.as_ref() == b"showGridLines" {
+                                        sheet_settings.show_grid_lines =
+                                            attr.value.as_ref() != b"0" && attr.value.as_ref() != b"false";
+                                    }
+                                }
+                                loop {
+                                    buf.clear();
+                                    match xml.read_event_into(&mut buf) {
+                                        Ok(Event::Start(ref pane_e) | Event::Empty(ref pane_e))
+                                            if pane_e.local_name().as_ref() == b"pane" =>
+                                        {
+                                            let mut freeze = FreezePanes::default();
+                                            for attr in pane_e.attributes() {
+                                                let attr = attr.map_err(XlsxError::XmlAttr)?;
+                                                match attr.key.as_ref() {
+                                                    b"xSplit" => {
+                                                        if let Ok(s) = xml.decoder().decode(&attr.value) {
+                                                            freeze.x_split = s.parse().unwrap_or(0.0);
+                                                        }
+                                                    }
+                                                    b"ySplit" => {
+                                                        if let Ok(s) = xml.decoder().decode(&attr.value) {
+                                                            freeze.y_split = s.parse().unwrap_or(0.0);
+                                                        }
+                                                    }
+                                                    b"topLeftCell" => {
+                                                        if let Ok(s) = xml.decoder().decode(&attr.value) {
+                                                            freeze.top_left_cell = Some(s.to_string());
+                                                        }
+                                                    }
+                                                    b"state" => {
+                                                        if let Ok(s) = xml.decoder().decode(&attr.value) {
+                                                            freeze.state = match s.as_ref() {
+                                                                "frozen" => PaneState::Frozen,
+                                                                "frozenSplit" => PaneState::FrozenSplit,
+                                                                "split" => PaneState::Split,
+                                                                _ => PaneState::Frozen,
+                                                            };
+                                                        }
+                                                    }
+                                                    _ => {}
+                                                }
+                                            }
+                                            sheet_settings.freeze_panes = Some(freeze);
+                                        }
+                                        Ok(Event::End(ref end_e))
+                                            if end_e.local_name().as_ref() == b"sheetView" =>
+                                        {
+                                            break;
+                                        }
+                                        Ok(Event::Eof) => break,
+                                        Err(e) => return Err(XlsxError::Xml(e)),
+                                        _ => {}
+                                    }
+                                }
+                            }
+                            Ok(Event::End(ref end_e))
+                                if end_e.local_name().as_ref() == b"sheetViews" =>
+                            {
+                                break;
+                            }
+                            Ok(Event::Eof) => break,
+                            Err(e) => return Err(XlsxError::Xml(e)),
+                            _ => {}
+                        }
+                    }
+                }
+                Ok(Event::Start(ref e) | Event::Empty(ref e))
+                    if e.local_name().as_ref() == b"sheetFormatPr" =>
+                {
                     // Parse default column width and row height
                     for attr in e.attributes() {
                         let attr = attr.map_err(XlsxError::XmlAttr)?;
@@ -2234,7 +2410,7 @@ impl<RS: Read + Seek> Xlsx<RS> {
                     loop {
                         buf.clear();
                         match xml.read_event_into(&mut buf) {
-                            Ok(Event::Start(ref col_e))
+                            Ok(Event::Start(ref col_e) | Event::Empty(ref col_e))
                                 if col_e.local_name().as_ref() == b"col" =>
                             {
                                 let mut col_info = None;
@@ -2242,6 +2418,8 @@ impl<RS: Read + Seek> Xlsx<RS> {
                                 let mut custom_width = false;
                                 let mut hidden = false;
                                 let mut best_fit = false;
+                                let mut outline_level: u8 = 0;
+                                let mut collapsed = false;
 
                                 for attr in col_e.attributes() {
                                     let attr = attr.map_err(XlsxError::XmlAttr)?;
@@ -2271,6 +2449,16 @@ impl<RS: Read + Seek> Xlsx<RS> {
                                         b"bestFit" => {
                                             best_fit = attr.value.as_ref() != b"0";
                                         }
+                                        b"outlineLevel" => {
+                                            if let Ok(level_str) = xml.decoder().decode(&attr.value) {
+                                                if let Ok(level) = level_str.parse::<u8>() {
+                                                    outline_level = level.min(7);
+                                                }
+                                            }
+                                        }
+                                        b"collapsed" => {
+                                            collapsed = attr.value.as_ref() != b"0";
+                                        }
                                         _ => {}
                                     }
                                 }
@@ -2279,7 +2467,9 @@ impl<RS: Read + Seek> Xlsx<RS> {
                                     let column_width = ColumnWidth::new(col, width)
                                         .with_custom_width(custom_width)
                                         .with_hidden(hidden)
-                                        .with_best_fit(best_fit);
+                                        .with_best_fit(best_fit)
+                                        .with_outline_level(outline_level)
+                                        .with_collapsed(collapsed);
                                     layout = layout.add_column_width(column_width);
                                 }
                             }
@@ -2306,6 +2496,8 @@ impl<RS: Read + Seek> Xlsx<RS> {
                                 let mut hidden = false;
                                 let mut thick_top = false;
                                 let mut thick_bottom = false;
+                                let mut outline_level: u8 = 0;
+                                let mut collapsed = false;
 
                                 for attr in row_e.attributes() {
                                     let attr = attr.map_err(XlsxError::XmlAttr)?;
@@ -2338,6 +2530,16 @@ impl<RS: Read + Seek> Xlsx<RS> {
                                         b"thickBot" => {
                                             thick_bottom = attr.value.as_ref() != b"0";
                                         }
+                                        b"outlineLevel" => {
+                                            if let Ok(level_str) = xml.decoder().decode(&attr.value) {
+                                                if let Ok(l) = level_str.parse::<u8>() {
+                                                    outline_level = l.min(7);
+                                                }
+                                            }
+                                        }
+                                        b"collapsed" => {
+                                            collapsed = attr.value.as_ref() != b"0";
+                                        }
                                         _ => {}
                                     }
                                 }
@@ -2349,12 +2551,16 @@ impl<RS: Read + Seek> Xlsx<RS> {
                                         || thick_top
                                         || thick_bottom
                                         || height > 0.0
+                                        || outline_level > 0
+                                        || collapsed
                                     {
                                         let row_height = RowHeight::new(row, height)
                                             .with_custom_height(custom_height)
                                             .with_hidden(hidden)
                                             .with_thick_top(thick_top)
-                                            .with_thick_bottom(thick_bottom);
+                                            .with_thick_bottom(thick_bottom)
+                                            .with_outline_level(outline_level)
+                                            .with_collapsed(collapsed);
                                         layout = layout.add_row_height(row_height);
                                     }
                                 }
@@ -2380,6 +2586,7 @@ impl<RS: Read + Seek> Xlsx<RS> {
             }
         }
 
+        let layout = layout.with_sheet_settings(sheet_settings);
         Ok(layout)
     }
 
@@ -2749,11 +2956,121 @@ impl<RS: Read + Seek> Reader<RS> for Xlsx<RS> {
             .ok_or_else(|| XlsxError::WorksheetNotFound(name.into()))??;
 
         let mut layout = WorksheetLayout::new();
+        let mut sheet_settings = SheetSettings::default();
         let mut buf = Vec::with_capacity(1024);
 
         loop {
             buf.clear();
             match xml.read_event_into(&mut buf) {
+                Ok(Event::Start(ref e)) if e.local_name().as_ref() == b"sheetPr" => {
+                    loop {
+                        buf.clear();
+                        match xml.read_event_into(&mut buf) {
+                            Ok(Event::Empty(ref tab_e))
+                                if tab_e.local_name().as_ref() == b"tabColor" =>
+                            {
+                                sheet_settings.tab_color =
+                                    parse_color_from_attrs(&tab_e.attributes(), self.theme.as_ref());
+                            }
+                            Ok(Event::End(ref end_e))
+                                if end_e.local_name().as_ref() == b"sheetPr" =>
+                            {
+                                break;
+                            }
+                            Ok(Event::Eof) => return Err(XlsxError::XmlEof("sheetPr")),
+                            Err(e) => return Err(XlsxError::Xml(e)),
+                            _ => {}
+                        }
+                    }
+                }
+                Ok(Event::Start(ref e)) if e.local_name().as_ref() == b"sheetViews" => {
+                    loop {
+                        buf.clear();
+                        match xml.read_event_into(&mut buf) {
+                            Ok(Event::Start(ref view_e))
+                                if view_e.local_name().as_ref() == b"sheetView" =>
+                            {
+                                for attr in view_e.attributes().flatten() {
+                                    if attr.key.as_ref() == b"showGridLines" {
+                                        sheet_settings.show_grid_lines =
+                                            attr.value.as_ref() != b"0";
+                                    }
+                                }
+                                loop {
+                                    buf.clear();
+                                    match xml.read_event_into(&mut buf) {
+                                        Ok(Event::Empty(ref pane_e))
+                                            if pane_e.local_name().as_ref() == b"pane" =>
+                                        {
+                                            let mut freeze = FreezePanes::default();
+                                            for attr in pane_e.attributes().flatten() {
+                                                match attr.key.as_ref() {
+                                                    b"xSplit" => {
+                                                        if let Ok(s) =
+                                                            std::str::from_utf8(&attr.value)
+                                                        {
+                                                            if let Ok(v) = s.parse::<f64>() {
+                                                                freeze.x_split = v;
+                                                            }
+                                                        }
+                                                    }
+                                                    b"ySplit" => {
+                                                        if let Ok(s) =
+                                                            std::str::from_utf8(&attr.value)
+                                                        {
+                                                            if let Ok(v) = s.parse::<f64>() {
+                                                                freeze.y_split = v;
+                                                            }
+                                                        }
+                                                    }
+                                                    b"topLeftCell" => {
+                                                        freeze.top_left_cell = std::str::from_utf8(
+                                                            &attr.value,
+                                                        )
+                                                        .ok()
+                                                        .map(|s| s.to_string());
+                                                    }
+                                                    b"state" => match attr.value.as_ref() {
+                                                        b"frozen" => {
+                                                            freeze.state = PaneState::Frozen
+                                                        }
+                                                        b"frozenSplit" => {
+                                                            freeze.state = PaneState::FrozenSplit
+                                                        }
+                                                        b"split" => {
+                                                            freeze.state = PaneState::Split
+                                                        }
+                                                        _ => {}
+                                                    },
+                                                    _ => {}
+                                                }
+                                            }
+                                            sheet_settings.freeze_panes = Some(freeze);
+                                        }
+                                        Ok(Event::End(ref end_e))
+                                            if end_e.local_name().as_ref() == b"sheetView" =>
+                                        {
+                                            break;
+                                        }
+                                        Ok(Event::Eof) => {
+                                            return Err(XlsxError::XmlEof("sheetView"))
+                                        }
+                                        Err(e) => return Err(XlsxError::Xml(e)),
+                                        _ => {}
+                                    }
+                                }
+                            }
+                            Ok(Event::End(ref end_e))
+                                if end_e.local_name().as_ref() == b"sheetViews" =>
+                            {
+                                break;
+                            }
+                            Ok(Event::Eof) => return Err(XlsxError::XmlEof("sheetViews")),
+                            Err(e) => return Err(XlsxError::Xml(e)),
+                            _ => {}
+                        }
+                    }
+                }
                 Ok(Event::Start(ref e)) if e.local_name().as_ref() == b"sheetFormatPr" => {
                     // Parse default column width and row height
                     for attr in e.attributes() {
@@ -2782,7 +3099,7 @@ impl<RS: Read + Seek> Reader<RS> for Xlsx<RS> {
                     loop {
                         buf.clear();
                         match xml.read_event_into(&mut buf) {
-                            Ok(Event::Start(ref col_e))
+                            Ok(Event::Start(ref col_e) | Event::Empty(ref col_e))
                                 if col_e.local_name().as_ref() == b"col" =>
                             {
                                 let mut col_info = None;
@@ -2790,6 +3107,8 @@ impl<RS: Read + Seek> Reader<RS> for Xlsx<RS> {
                                 let mut custom_width = false;
                                 let mut hidden = false;
                                 let mut best_fit = false;
+                                let mut outline_level: u8 = 0;
+                                let mut collapsed = false;
 
                                 for attr in col_e.attributes() {
                                     let attr = attr.map_err(XlsxError::XmlAttr)?;
@@ -2819,6 +3138,16 @@ impl<RS: Read + Seek> Reader<RS> for Xlsx<RS> {
                                         b"bestFit" => {
                                             best_fit = attr.value.as_ref() != b"0";
                                         }
+                                        b"outlineLevel" => {
+                                            if let Ok(level_str) = xml.decoder().decode(&attr.value) {
+                                                if let Ok(level) = level_str.parse::<u8>() {
+                                                    outline_level = level.min(7);
+                                                }
+                                            }
+                                        }
+                                        b"collapsed" => {
+                                            collapsed = attr.value.as_ref() != b"0";
+                                        }
                                         _ => {}
                                     }
                                 }
@@ -2827,7 +3156,9 @@ impl<RS: Read + Seek> Reader<RS> for Xlsx<RS> {
                                     let column_width = ColumnWidth::new(col, width)
                                         .with_custom_width(custom_width)
                                         .with_hidden(hidden)
-                                        .with_best_fit(best_fit);
+                                        .with_best_fit(best_fit)
+                                        .with_outline_level(outline_level)
+                                        .with_collapsed(collapsed);
                                     layout = layout.add_column_width(column_width);
                                 }
                             }
@@ -2854,6 +3185,8 @@ impl<RS: Read + Seek> Reader<RS> for Xlsx<RS> {
                                 let mut hidden = false;
                                 let mut thick_top = false;
                                 let mut thick_bottom = false;
+                                let mut outline_level: u8 = 0;
+                                let mut collapsed = false;
 
                                 for attr in row_e.attributes() {
                                     let attr = attr.map_err(XlsxError::XmlAttr)?;
@@ -2886,6 +3219,16 @@ impl<RS: Read + Seek> Reader<RS> for Xlsx<RS> {
                                         b"thickBot" => {
                                             thick_bottom = attr.value.as_ref() != b"0";
                                         }
+                                        b"outlineLevel" => {
+                                            if let Ok(level_str) = xml.decoder().decode(&attr.value) {
+                                                if let Ok(l) = level_str.parse::<u8>() {
+                                                    outline_level = l.min(7);
+                                                }
+                                            }
+                                        }
+                                        b"collapsed" => {
+                                            collapsed = attr.value.as_ref() != b"0";
+                                        }
                                         _ => {}
                                     }
                                 }
@@ -2897,12 +3240,16 @@ impl<RS: Read + Seek> Reader<RS> for Xlsx<RS> {
                                         || thick_top
                                         || thick_bottom
                                         || height > 0.0
+                                        || outline_level > 0
+                                        || collapsed
                                     {
                                         let row_height = RowHeight::new(row, height)
                                             .with_custom_height(custom_height)
                                             .with_hidden(hidden)
                                             .with_thick_top(thick_top)
-                                            .with_thick_bottom(thick_bottom);
+                                            .with_thick_bottom(thick_bottom)
+                                            .with_outline_level(outline_level)
+                                            .with_collapsed(collapsed);
                                         layout = layout.add_row_height(row_height);
                                     }
                                 }
@@ -2928,6 +3275,7 @@ impl<RS: Read + Seek> Reader<RS> for Xlsx<RS> {
             }
         }
 
+        let layout = layout.with_sheet_settings(sheet_settings);
         Ok(layout)
     }
 

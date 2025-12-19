@@ -647,6 +647,10 @@ pub struct ColumnWidth {
     pub hidden: bool,
     /// Best fit width
     pub best_fit: bool,
+    /// Outline level (0-7) for column grouping
+    pub outline_level: u8,
+    /// Whether the outline group is collapsed
+    pub collapsed: bool,
 }
 
 impl ColumnWidth {
@@ -658,6 +662,8 @@ impl ColumnWidth {
             custom_width: false,
             hidden: false,
             best_fit: false,
+            outline_level: 0,
+            collapsed: false,
         }
     }
 
@@ -676,6 +682,18 @@ impl ColumnWidth {
     /// Set best fit flag
     pub fn with_best_fit(mut self, best_fit: bool) -> Self {
         self.best_fit = best_fit;
+        self
+    }
+
+    /// Set outline level (0-7)
+    pub fn with_outline_level(mut self, level: u8) -> Self {
+        self.outline_level = level.min(7);
+        self
+    }
+
+    /// Set collapsed flag
+    pub fn with_collapsed(mut self, collapsed: bool) -> Self {
+        self.collapsed = collapsed;
         self
     }
 
@@ -700,6 +718,10 @@ pub struct RowHeight {
     pub thick_top: bool,
     /// Thick bottom border
     pub thick_bottom: bool,
+    /// Outline level (0-7) for row grouping
+    pub outline_level: u8,
+    /// Whether the outline group is collapsed
+    pub collapsed: bool,
 }
 
 impl RowHeight {
@@ -712,6 +734,8 @@ impl RowHeight {
             hidden: false,
             thick_top: false,
             thick_bottom: false,
+            outline_level: 0,
+            collapsed: false,
         }
     }
 
@@ -739,9 +763,67 @@ impl RowHeight {
         self
     }
 
+    /// Set outline level (0-7)
+    pub fn with_outline_level(mut self, level: u8) -> Self {
+        self.outline_level = level.min(7);
+        self
+    }
+
+    /// Set collapsed flag
+    pub fn with_collapsed(mut self, collapsed: bool) -> Self {
+        self.collapsed = collapsed;
+        self
+    }
+
     /// Check if row is visible
     pub fn is_visible(&self) -> bool {
         !self.hidden
+    }
+}
+
+/// Pane state for freeze/split panes
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PaneState {
+    /// Panes are frozen
+    #[default]
+    Frozen,
+    /// Panes are frozen but were previously split
+    FrozenSplit,
+    /// Panes are split but not frozen
+    Split,
+}
+
+/// Freeze/split pane information
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct FreezePanes {
+    /// Columns frozen (or split position in twips for split panes)
+    pub x_split: f64,
+    /// Rows frozen (or split position in twips for split panes)
+    pub y_split: f64,
+    /// Cell reference for top-left of scrollable area (e.g., "B2")
+    pub top_left_cell: Option<String>,
+    /// Pane state (frozen, frozenSplit, or split)
+    pub state: PaneState,
+}
+
+/// Sheet-level settings
+#[derive(Debug, Clone, PartialEq)]
+pub struct SheetSettings {
+    /// Whether gridlines are visible (default: true)
+    pub show_grid_lines: bool,
+    /// Freeze/split pane information
+    pub freeze_panes: Option<FreezePanes>,
+    /// Sheet tab color
+    pub tab_color: Option<Color>,
+}
+
+impl Default for SheetSettings {
+    fn default() -> Self {
+        Self {
+            show_grid_lines: true,
+            freeze_panes: None,
+            tab_color: None,
+        }
     }
 }
 
@@ -756,6 +838,8 @@ pub struct WorksheetLayout {
     pub default_column_width: Option<f64>,
     /// Default row height
     pub default_row_height: Option<f64>,
+    /// Sheet-level settings (gridlines, freeze panes, tab color)
+    pub sheet_settings: SheetSettings,
 }
 
 impl WorksheetLayout {
@@ -785,6 +869,12 @@ impl WorksheetLayout {
     /// Set default row height
     pub fn with_default_row_height(mut self, height: f64) -> Self {
         self.default_row_height = Some(height);
+        self
+    }
+
+    /// Set sheet settings
+    pub fn with_sheet_settings(mut self, settings: SheetSettings) -> Self {
+        self.sheet_settings = settings;
         self
     }
 
