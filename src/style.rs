@@ -939,6 +939,8 @@ pub struct Style {
     pub protection: Option<Protection>,
     /// Style ID (for internal use)
     pub style_id: Option<u32>,
+    /// Reference to cellStyleXfs entry (for named style matching)
+    pub xf_id: Option<usize>,
 }
 
 impl Style {

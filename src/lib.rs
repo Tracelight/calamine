@@ -444,7 +444,7 @@ impl<'a> CellType for &'a Style {}
 // Implement Default for &'a Style using a static reference
 impl<'a> Default for &'a Style {
     fn default() -> Self {
-        const DEFAULT_STYLE: Style = Style {
+        static DEFAULT_STYLE: Style = Style {
             font: None,
             fill: None,
             borders: None,
@@ -452,6 +452,7 @@ impl<'a> Default for &'a Style {
             number_format: None,
             protection: None,
             style_id: None,
+            xf_id: None,
         };
         &DEFAULT_STYLE
     }

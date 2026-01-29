@@ -912,6 +912,7 @@ impl<RS: Read + Seek> Xlsx<RS> {
                                     _ => {}
                                 }
                             }
+                            style.xf_id = Some(xf_id);
                             let style_index = self.styles.len() as u32;
                             self.styles.push(style.with_style_id(style_index));
 
@@ -1041,6 +1042,7 @@ impl<RS: Read + Seek> Xlsx<RS> {
                                 style = style.with_number_format(number_format);
                             }
 
+                            style.xf_id = Some(xf_id);
                             let style_index = self.styles.len() as u32;
                             self.styles.push(style.with_style_id(style_index));
 
