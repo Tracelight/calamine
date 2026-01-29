@@ -29,7 +29,8 @@ use zip::result::ZipError;
 use crate::datatype::DataRef;
 use crate::formats::{builtin_format_by_id, detect_custom_number_format, CellFormat};
 use crate::style::{
-    Color, ColumnWidth, FreezePanes, PaneState, RowHeight, SheetSettings, WorksheetLayout,
+    Color, ColumnWidth, FreezePanes, NamedStyle, PaneState, RowHeight, SheetSettings,
+    WorksheetLayout,
 };
 use crate::utils::{unescape_entity_to_buffer, unescape_xml};
 use crate::vba::VbaProject;
@@ -365,6 +366,10 @@ pub struct Xlsx<RS> {
     pub dxfs: Vec<Style>,
     /// Default cell style (Normal style from cellStyleXfs[0])
     pub default_style: Option<Style>,
+    /// Named cell styles (e.g., "Normal", "Heading 1", custom styles)
+    pub named_styles: Vec<NamedStyle>,
+    /// Cell style XFs (the formatting entries that named styles reference)
+    pub cell_style_xfs: Vec<Style>,
 }
 
 /// Xlsx reader options
@@ -709,9 +714,50 @@ impl<RS: Read + Seek> Xlsx<RS> {
                         }
                         Ok(Event::End(e)) if e.local_name().as_ref() == b"cellStyleXfs" => {
                             self.default_style = cell_style_xfs.first().cloned();
+                            self.cell_style_xfs = cell_style_xfs.clone();
                             break;
                         }
                         Ok(Event::Eof) => return Err(XlsxError::XmlEof("cellStyleXfs")),
+                        Err(e) => return Err(XlsxError::Xml(e)),
+                        _ => (),
+                    }
+                },
+                Ok(Event::Start(e)) if e.local_name().as_ref() == b"cellStyles" => loop {
+                    inner_buf.clear();
+                    match xml.read_event_into(&mut inner_buf) {
+                        Ok(Event::Start(e)) if e.local_name().as_ref() == b"cellStyle" => {
+                            let mut name: Option<String> = None;
+                            let mut xf_id: Option<usize> = None;
+                            for a in e.attributes() {
+                                let a = a.map_err(XlsxError::XmlAttr)?;
+                                match a.key.as_ref() {
+                                    b"name" => { name = Some(xml.decoder().decode(&a.value)?.into_owned()); }
+                                    b"xfId" => { xf_id = xml.decoder().decode(&a.value)?.parse().ok(); }
+                                    _ => {}
+                                }
+                            }
+                            if let (Some(name), Some(xf_id)) = (name, xf_id) {
+                                self.named_styles.push(NamedStyle { name, xf_id });
+                            }
+                            xml.read_to_end_into(e.name(), &mut Vec::new())?;
+                        }
+                        Ok(Event::Empty(e)) if e.local_name().as_ref() == b"cellStyle" => {
+                            let mut name: Option<String> = None;
+                            let mut xf_id: Option<usize> = None;
+                            for a in e.attributes() {
+                                let a = a.map_err(XlsxError::XmlAttr)?;
+                                match a.key.as_ref() {
+                                    b"name" => { name = Some(xml.decoder().decode(&a.value)?.into_owned()); }
+                                    b"xfId" => { xf_id = xml.decoder().decode(&a.value)?.parse().ok(); }
+                                    _ => {}
+                                }
+                            }
+                            if let (Some(name), Some(xf_id)) = (name, xf_id) {
+                                self.named_styles.push(NamedStyle { name, xf_id });
+                            }
+                        }
+                        Ok(Event::End(e)) if e.local_name().as_ref() == b"cellStyles" => break,
+                        Ok(Event::Eof) => return Err(XlsxError::XmlEof("cellStyles")),
                         Err(e) => return Err(XlsxError::Xml(e)),
                         _ => (),
                     }
@@ -2860,6 +2906,8 @@ impl<RS: Read + Seek> Reader<RS> for Xlsx<RS> {
             indexed_colors: None,
             dxfs: Vec::new(),
             default_style: None,
+            named_styles: Vec::new(),
+            cell_style_xfs: Vec::new(),
         };
         xlsx.read_shared_strings()?;
         xlsx.read_theme()?;
@@ -4778,6 +4826,8 @@ mod tests {
             indexed_colors: None,
             dxfs: Vec::new(),
             default_style: None,
+            named_styles: Vec::new(),
+            cell_style_xfs: Vec::new(),
         };
 
         assert!(xlsx.read_shared_strings().is_ok());

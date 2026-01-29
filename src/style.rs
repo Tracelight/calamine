@@ -913,6 +913,15 @@ impl WorksheetLayout {
     }
 }
 
+/// A named cell style from Excel's style gallery
+#[derive(Debug, Clone, PartialEq)]
+pub struct NamedStyle {
+    /// The display name of the style (e.g., "Normal", "Heading 1", "Total")
+    pub name: String,
+    /// The xfId referencing an entry in cellStyleXfs
+    pub xf_id: usize,
+}
+
 /// Complete cell style
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Style {
