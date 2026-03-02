@@ -2435,6 +2435,13 @@ impl<RS: Read + Seek> Xlsx<RS> {
                     for attr in e.attributes() {
                         let attr = attr.map_err(XlsxError::XmlAttr)?;
                         match attr.key.as_ref() {
+                            b"baseColWidth" => {
+                                if let Ok(width_str) = xml.decoder().decode(&attr.value) {
+                                    if let Ok(width) = width_str.parse::<u32>() {
+                                        layout = layout.with_base_column_width(width);
+                                    }
+                                }
+                            }
                             b"defaultColWidth" => {
                                 if let Ok(width_str) = xml.decoder().decode(&attr.value) {
                                     if let Ok(width) = width_str.parse::<f64>() {
@@ -3138,6 +3145,13 @@ impl<RS: Read + Seek> Reader<RS> for Xlsx<RS> {
                     for attr in e.attributes() {
                         let attr = attr.map_err(XlsxError::XmlAttr)?;
                         match attr.key.as_ref() {
+                            b"baseColWidth" => {
+                                if let Ok(width_str) = xml.decoder().decode(&attr.value) {
+                                    if let Ok(width) = width_str.parse::<u32>() {
+                                        layout = layout.with_base_column_width(width);
+                                    }
+                                }
+                            }
                             b"defaultColWidth" => {
                                 if let Ok(width_str) = xml.decoder().decode(&attr.value) {
                                     if let Ok(width) = width_str.parse::<f64>() {

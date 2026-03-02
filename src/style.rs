@@ -834,6 +834,8 @@ pub struct WorksheetLayout {
     pub column_widths: Vec<ColumnWidth>,
     /// Row heights
     pub row_heights: Vec<RowHeight>,
+    /// Base column width (number of characters of the Normal style font)
+    pub base_column_width: Option<u32>,
     /// Default column width
     pub default_column_width: Option<f64>,
     /// Default row height
@@ -857,6 +859,12 @@ impl WorksheetLayout {
     /// Add a row height
     pub fn add_row_height(mut self, row_height: RowHeight) -> Self {
         self.row_heights.push(row_height);
+        self
+    }
+
+    /// Set base column width
+    pub fn with_base_column_width(mut self, width: u32) -> Self {
+        self.base_column_width = Some(width);
         self
     }
 
