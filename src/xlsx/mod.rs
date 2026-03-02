@@ -2462,6 +2462,7 @@ impl<RS: Read + Seek> Xlsx<RS> {
                                 if col_e.local_name().as_ref() == b"col" =>
                             {
                                 let mut col_info = None;
+                                let mut max_col: Option<u32> = None;
                                 let mut width = 0.0;
                                 let mut custom_width = false;
                                 let mut hidden = false;
@@ -2474,8 +2475,16 @@ impl<RS: Read + Seek> Xlsx<RS> {
                                     match attr.key.as_ref() {
                                         b"min" => {
                                             if let Ok(min_str) = xml.decoder().decode(&attr.value) {
-                                                if let Ok(min_col) = min_str.parse::<u32>() {
-                                                    col_info = Some(min_col - 1);
+                                                if let Ok(min_val) = min_str.parse::<u32>() {
+                                                    col_info = Some(min_val - 1);
+                                                    // Convert to 0-based
+                                                }
+                                            }
+                                        }
+                                        b"max" => {
+                                            if let Ok(max_str) = xml.decoder().decode(&attr.value) {
+                                                if let Ok(max_val) = max_str.parse::<u32>() {
+                                                    max_col = Some(max_val - 1);
                                                     // Convert to 0-based
                                                 }
                                             }
@@ -2511,14 +2520,17 @@ impl<RS: Read + Seek> Xlsx<RS> {
                                     }
                                 }
 
-                                if let Some(col) = col_info {
-                                    let column_width = ColumnWidth::new(col, width)
-                                        .with_custom_width(custom_width)
-                                        .with_hidden(hidden)
-                                        .with_best_fit(best_fit)
-                                        .with_outline_level(outline_level)
-                                        .with_collapsed(collapsed);
-                                    layout = layout.add_column_width(column_width);
+                                if let Some(min) = col_info {
+                                    let max = max_col.unwrap_or(min).max(min).min(16383);
+                                    for col in min..=max {
+                                        let column_width = ColumnWidth::new(col, width)
+                                            .with_custom_width(custom_width)
+                                            .with_hidden(hidden)
+                                            .with_best_fit(best_fit)
+                                            .with_outline_level(outline_level)
+                                            .with_collapsed(collapsed);
+                                        layout = layout.add_column_width(column_width);
+                                    }
                                 }
                             }
                             Ok(Event::End(ref end_e)) if end_e.local_name().as_ref() == b"cols" => {
@@ -3153,6 +3165,7 @@ impl<RS: Read + Seek> Reader<RS> for Xlsx<RS> {
                                 if col_e.local_name().as_ref() == b"col" =>
                             {
                                 let mut col_info = None;
+                                let mut max_col: Option<u32> = None;
                                 let mut width = 0.0;
                                 let mut custom_width = false;
                                 let mut hidden = false;
@@ -3165,8 +3178,16 @@ impl<RS: Read + Seek> Reader<RS> for Xlsx<RS> {
                                     match attr.key.as_ref() {
                                         b"min" => {
                                             if let Ok(min_str) = xml.decoder().decode(&attr.value) {
-                                                if let Ok(min_col) = min_str.parse::<u32>() {
-                                                    col_info = Some(min_col - 1);
+                                                if let Ok(min_val) = min_str.parse::<u32>() {
+                                                    col_info = Some(min_val - 1);
+                                                    // Convert to 0-based
+                                                }
+                                            }
+                                        }
+                                        b"max" => {
+                                            if let Ok(max_str) = xml.decoder().decode(&attr.value) {
+                                                if let Ok(max_val) = max_str.parse::<u32>() {
+                                                    max_col = Some(max_val - 1);
                                                     // Convert to 0-based
                                                 }
                                             }
@@ -3202,14 +3223,17 @@ impl<RS: Read + Seek> Reader<RS> for Xlsx<RS> {
                                     }
                                 }
 
-                                if let Some(col) = col_info {
-                                    let column_width = ColumnWidth::new(col, width)
-                                        .with_custom_width(custom_width)
-                                        .with_hidden(hidden)
-                                        .with_best_fit(best_fit)
-                                        .with_outline_level(outline_level)
-                                        .with_collapsed(collapsed);
-                                    layout = layout.add_column_width(column_width);
+                                if let Some(min) = col_info {
+                                    let max = max_col.unwrap_or(min).max(min).min(16383);
+                                    for col in min..=max {
+                                        let column_width = ColumnWidth::new(col, width)
+                                            .with_custom_width(custom_width)
+                                            .with_hidden(hidden)
+                                            .with_best_fit(best_fit)
+                                            .with_outline_level(outline_level)
+                                            .with_collapsed(collapsed);
+                                        layout = layout.add_column_width(column_width);
+                                    }
                                 }
                             }
                             Ok(Event::End(ref end_e)) if end_e.local_name().as_ref() == b"cols" => {
