@@ -651,6 +651,8 @@ pub struct ColumnWidth {
     pub outline_level: u8,
     /// Whether the outline group is collapsed
     pub collapsed: bool,
+    /// cellXfs index referenced by the column's `style` attribute, if any
+    pub style: Option<u32>,
 }
 
 impl ColumnWidth {
@@ -664,6 +666,7 @@ impl ColumnWidth {
             best_fit: false,
             outline_level: 0,
             collapsed: false,
+            style: None,
         }
     }
 
@@ -697,6 +700,12 @@ impl ColumnWidth {
         self
     }
 
+    /// Set the cellXfs index from `<col style="N">`
+    pub fn with_style(mut self, style: u32) -> Self {
+        self.style = Some(style);
+        self
+    }
+
     /// Check if column is visible
     pub fn is_visible(&self) -> bool {
         !self.hidden
@@ -722,6 +731,8 @@ pub struct RowHeight {
     pub outline_level: u8,
     /// Whether the outline group is collapsed
     pub collapsed: bool,
+    /// cellXfs index referenced by the row's `s` attribute, if any
+    pub style: Option<u32>,
 }
 
 impl RowHeight {
@@ -736,6 +747,7 @@ impl RowHeight {
             thick_bottom: false,
             outline_level: 0,
             collapsed: false,
+            style: None,
         }
     }
 
@@ -772,6 +784,12 @@ impl RowHeight {
     /// Set collapsed flag
     pub fn with_collapsed(mut self, collapsed: bool) -> Self {
         self.collapsed = collapsed;
+        self
+    }
+
+    /// Set the cellXfs index from `<row s="N">`
+    pub fn with_style(mut self, style: u32) -> Self {
+        self.style = Some(style);
         self
     }
 

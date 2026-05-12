@@ -2476,6 +2476,7 @@ impl<RS: Read + Seek> Xlsx<RS> {
                                 let mut best_fit = false;
                                 let mut outline_level: u8 = 0;
                                 let mut collapsed = false;
+                                let mut style: Option<u32> = None;
 
                                 for attr in col_e.attributes() {
                                     let attr = attr.map_err(XlsxError::XmlAttr)?;
@@ -2523,6 +2524,13 @@ impl<RS: Read + Seek> Xlsx<RS> {
                                         b"collapsed" => {
                                             collapsed = attr.value.as_ref() != b"0";
                                         }
+                                        b"style" => {
+                                            if let Ok(s) = xml.decoder().decode(&attr.value) {
+                                                if let Ok(v) = s.parse::<u32>() {
+                                                    style = Some(v);
+                                                }
+                                            }
+                                        }
                                         _ => {}
                                     }
                                 }
@@ -2530,12 +2538,15 @@ impl<RS: Read + Seek> Xlsx<RS> {
                                 if let Some(min) = col_info {
                                     let max = max_col.unwrap_or(min).max(min).min(16383);
                                     for col in min..=max {
-                                        let column_width = ColumnWidth::new(col, width)
+                                        let mut column_width = ColumnWidth::new(col, width)
                                             .with_custom_width(custom_width)
                                             .with_hidden(hidden)
                                             .with_best_fit(best_fit)
                                             .with_outline_level(outline_level)
                                             .with_collapsed(collapsed);
+                                        if let Some(s) = style {
+                                            column_width = column_width.with_style(s);
+                                        }
                                         layout = layout.add_column_width(column_width);
                                     }
                                 }
@@ -2565,6 +2576,7 @@ impl<RS: Read + Seek> Xlsx<RS> {
                                 let mut thick_bottom = false;
                                 let mut outline_level: u8 = 0;
                                 let mut collapsed = false;
+                                let mut style: Option<u32> = None;
 
                                 for attr in row_e.attributes() {
                                     let attr = attr.map_err(XlsxError::XmlAttr)?;
@@ -2607,6 +2619,13 @@ impl<RS: Read + Seek> Xlsx<RS> {
                                         b"collapsed" => {
                                             collapsed = attr.value.as_ref() != b"0";
                                         }
+                                        b"s" => {
+                                            if let Ok(s) = xml.decoder().decode(&attr.value) {
+                                                if let Ok(v) = s.parse::<u32>() {
+                                                    style = Some(v);
+                                                }
+                                            }
+                                        }
                                         _ => {}
                                     }
                                 }
@@ -2620,14 +2639,18 @@ impl<RS: Read + Seek> Xlsx<RS> {
                                         || height > 0.0
                                         || outline_level > 0
                                         || collapsed
+                                        || style.is_some()
                                     {
-                                        let row_height = RowHeight::new(row, height)
+                                        let mut row_height = RowHeight::new(row, height)
                                             .with_custom_height(custom_height)
                                             .with_hidden(hidden)
                                             .with_thick_top(thick_top)
                                             .with_thick_bottom(thick_bottom)
                                             .with_outline_level(outline_level)
                                             .with_collapsed(collapsed);
+                                        if let Some(s) = style {
+                                            row_height = row_height.with_style(s);
+                                        }
                                         layout = layout.add_row_height(row_height);
                                     }
                                 }
@@ -3186,6 +3209,7 @@ impl<RS: Read + Seek> Reader<RS> for Xlsx<RS> {
                                 let mut best_fit = false;
                                 let mut outline_level: u8 = 0;
                                 let mut collapsed = false;
+                                let mut style: Option<u32> = None;
 
                                 for attr in col_e.attributes() {
                                     let attr = attr.map_err(XlsxError::XmlAttr)?;
@@ -3233,6 +3257,13 @@ impl<RS: Read + Seek> Reader<RS> for Xlsx<RS> {
                                         b"collapsed" => {
                                             collapsed = attr.value.as_ref() != b"0";
                                         }
+                                        b"style" => {
+                                            if let Ok(s) = xml.decoder().decode(&attr.value) {
+                                                if let Ok(v) = s.parse::<u32>() {
+                                                    style = Some(v);
+                                                }
+                                            }
+                                        }
                                         _ => {}
                                     }
                                 }
@@ -3240,12 +3271,15 @@ impl<RS: Read + Seek> Reader<RS> for Xlsx<RS> {
                                 if let Some(min) = col_info {
                                     let max = max_col.unwrap_or(min).max(min).min(16383);
                                     for col in min..=max {
-                                        let column_width = ColumnWidth::new(col, width)
+                                        let mut column_width = ColumnWidth::new(col, width)
                                             .with_custom_width(custom_width)
                                             .with_hidden(hidden)
                                             .with_best_fit(best_fit)
                                             .with_outline_level(outline_level)
                                             .with_collapsed(collapsed);
+                                        if let Some(s) = style {
+                                            column_width = column_width.with_style(s);
+                                        }
                                         layout = layout.add_column_width(column_width);
                                     }
                                 }
@@ -3275,6 +3309,7 @@ impl<RS: Read + Seek> Reader<RS> for Xlsx<RS> {
                                 let mut thick_bottom = false;
                                 let mut outline_level: u8 = 0;
                                 let mut collapsed = false;
+                                let mut style: Option<u32> = None;
 
                                 for attr in row_e.attributes() {
                                     let attr = attr.map_err(XlsxError::XmlAttr)?;
@@ -3317,6 +3352,13 @@ impl<RS: Read + Seek> Reader<RS> for Xlsx<RS> {
                                         b"collapsed" => {
                                             collapsed = attr.value.as_ref() != b"0";
                                         }
+                                        b"s" => {
+                                            if let Ok(s) = xml.decoder().decode(&attr.value) {
+                                                if let Ok(v) = s.parse::<u32>() {
+                                                    style = Some(v);
+                                                }
+                                            }
+                                        }
                                         _ => {}
                                     }
                                 }
@@ -3330,14 +3372,18 @@ impl<RS: Read + Seek> Reader<RS> for Xlsx<RS> {
                                         || height > 0.0
                                         || outline_level > 0
                                         || collapsed
+                                        || style.is_some()
                                     {
-                                        let row_height = RowHeight::new(row, height)
+                                        let mut row_height = RowHeight::new(row, height)
                                             .with_custom_height(custom_height)
                                             .with_hidden(hidden)
                                             .with_thick_top(thick_top)
                                             .with_thick_bottom(thick_bottom)
                                             .with_outline_level(outline_level)
                                             .with_collapsed(collapsed);
+                                        if let Some(s) = style {
+                                            row_height = row_height.with_style(s);
+                                        }
                                         layout = layout.add_row_height(row_height);
                                     }
                                 }
