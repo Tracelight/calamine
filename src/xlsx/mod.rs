@@ -371,6 +371,9 @@ pub struct Xlsx<RS> {
     pub named_styles: Vec<NamedStyle>,
     /// Cell style XFs (the formatting entries that named styles reference)
     pub cell_style_xfs: Vec<Style>,
+    /// Per-sheet cache of parsed data-table recipes. Populated as a side-effect
+    /// of `worksheet_formula`'s walk via `<f t="dataTable">` parsing.
+    parsed_data_tables: BTreeMap<String, Vec<DataTableFormula>>,
 }
 
 /// Xlsx reader options
@@ -381,6 +384,25 @@ struct XlsxOptions {
 }
 
 impl<RS: Read + Seek> Xlsx<RS> {
+    /// Returns the data-table recipes for `name`, populating the cache on first
+    /// call by triggering `worksheet_formula`'s walk if needed.
+    ///
+    /// Single-pass guarantee: if `worksheet_formula(name)` was already called,
+    /// this returns the cached vec without any new XML reads.
+    pub fn worksheet_data_tables(
+        &mut self,
+        name: &str,
+    ) -> Result<Vec<DataTableFormula>, XlsxError> {
+        if !self.parsed_data_tables.contains_key(name) {
+            self.worksheet_formula(name)?;
+        }
+        Ok(self
+            .parsed_data_tables
+            .get(name)
+            .cloned()
+            .unwrap_or_default())
+    }
+
     fn read_shared_strings(&mut self) -> Result<(), XlsxError> {
         let mut xml = match xml_reader(&mut self.zip, "xl/sharedStrings.xml") {
             None => return Ok(()),
@@ -2930,6 +2952,7 @@ impl<RS: Read + Seek> Reader<RS> for Xlsx<RS> {
             default_style: None,
             named_styles: Vec::new(),
             cell_style_xfs: Vec::new(),
+            parsed_data_tables: BTreeMap::new(),
         };
         xlsx.read_shared_strings()?;
         xlsx.read_theme()?;
@@ -2990,7 +3013,12 @@ impl<RS: Read + Seek> Reader<RS> for Xlsx<RS> {
                 cells.push(cell);
             }
         }
-        Ok(Range::from_sparse(cells))
+        let walked_data_tables = cell_reader.take_data_tables();
+        drop(cell_reader);
+        let range = Range::from_sparse(cells);
+        self.parsed_data_tables
+            .insert(name.to_string(), walked_data_tables);
+        Ok(range)
     }
 
     fn worksheet_style<'a>(&'a mut self, name: &str) -> Result<Range<&'a Style>, XlsxError> {
@@ -4869,6 +4897,7 @@ mod tests {
             default_style: None,
             named_styles: Vec::new(),
             cell_style_xfs: Vec::new(),
+            parsed_data_tables: BTreeMap::new(),
         };
 
         assert!(xlsx.read_shared_strings().is_ok());

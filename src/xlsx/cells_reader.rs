@@ -64,7 +64,7 @@ where
     buf: Vec<u8>,
     cell_buf: Vec<u8>,
     formulas: Vec<Option<(String, FormulaMap)>>,
-    pub(crate) data_tables: Vec<DataTableFormula>,
+    data_tables: Vec<DataTableFormula>,
 }
 
 impl<'a, RS> XlsxCellReader<'a, RS>
@@ -136,6 +136,11 @@ where
 
     pub fn dimensions(&self) -> Dimensions {
         self.dimensions
+    }
+
+    /// Drain the data-table accumulator. Call after the walk is complete.
+    pub(crate) fn take_data_tables(&mut self) -> Vec<DataTableFormula> {
+        std::mem::take(&mut self.data_tables)
     }
 
     pub fn next_cell(&mut self) -> Result<Option<Cell<'a, DataRef<'a>>>, XlsxError> {
