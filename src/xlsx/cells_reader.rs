@@ -64,6 +64,7 @@ where
     buf: Vec<u8>,
     cell_buf: Vec<u8>,
     formulas: Vec<Option<(String, FormulaMap)>>,
+    pub(crate) data_tables: Vec<DataTableFormula>,
 }
 
 impl<'a, RS> XlsxCellReader<'a, RS>
@@ -129,6 +130,7 @@ where
             buf: Vec::with_capacity(1024),
             cell_buf: Vec::with_capacity(1024),
             formulas: Vec::with_capacity(1024),
+            data_tables: Vec::new(),
         })
     }
 
@@ -261,7 +263,67 @@ where
                                 if let Some(f) = formula.borrow() {
                                     value = Some(f.clone());
                                 }
-                                if let Ok(Some(b"shared")) =
+                                // Note: the xlsx reader is configured with
+                                // expand_empty_elements=true, so self-closing
+                                // <f t="dataTable" .../> arrives here as
+                                // Event::Start(<f>) + Event::End(</f>); read_formula
+                                // above already consumed the (empty) body and matching End.
+                                if let Ok(Some(b"dataTable")) =
+                                    get_attribute(e.attributes(), QName(b"t"))
+                                {
+                                    let range = match get_attribute(e.attributes(), QName(b"ref"))?
+                                    {
+                                        Some(r) => get_dimension(r)?,
+                                        None => {
+                                            return Err(XlsxError::Unexpected(
+                                                "dataTable <f> missing ref attribute",
+                                            ));
+                                        }
+                                    };
+                                    let del1 = matches!(
+                                        get_attribute(e.attributes(), QName(b"del1"))?,
+                                        Some(b"1")
+                                    );
+                                    let del2 = matches!(
+                                        get_attribute(e.attributes(), QName(b"del2"))?,
+                                        Some(b"1")
+                                    );
+                                    let r1_raw = get_attribute(e.attributes(), QName(b"r1"))?;
+                                    let r2_raw = get_attribute(e.attributes(), QName(b"r2"))?;
+                                    let row_oriented = matches!(
+                                        get_attribute(e.attributes(), QName(b"dtr"))?,
+                                        Some(b"1")
+                                    );
+
+                                    // Canonical: two_dimensional iff r2 attribute is present
+                                    // (not from dt2D — non-Excel writers may suppress dt2D="0").
+                                    let two_dimensional = r2_raw.is_some();
+
+                                    let r1 = if del1 {
+                                        None
+                                    } else {
+                                        match r1_raw {
+                                            Some(addr) => Some(get_row_column(addr)?),
+                                            None => None,
+                                        }
+                                    };
+                                    let r2 = if del2 {
+                                        None
+                                    } else {
+                                        match r2_raw {
+                                            Some(addr) => Some(get_row_column(addr)?),
+                                            None => None,
+                                        }
+                                    };
+
+                                    self.data_tables.push(DataTableFormula {
+                                        range,
+                                        r1,
+                                        r2,
+                                        two_dimensional,
+                                        row_oriented,
+                                    });
+                                } else if let Ok(Some(b"shared")) =
                                     get_attribute(e.attributes(), QName(b"t"))
                                 {
                                     // shared formula
