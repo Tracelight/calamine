@@ -38,6 +38,7 @@ use crate::{
     Cell, CellErrorType, Data, Dimensions, HeaderRow, Metadata, Range, Reader, ReaderRef, Sheet,
     SheetType, SheetVisible, Style, Table,
 };
+pub use cells_reader::DataTableFormula;
 pub use cells_reader::XlsxCellReader;
 pub use comments::{
     Comment, LegacyCommentsMap, Person, PersonsMap, RichTextRun, ThreadedComment,

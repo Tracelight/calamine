@@ -25,6 +25,29 @@ use crate::{
 
 type FormulaMap = HashMap<(u32, u32), (i64, i64)>;
 
+/// Recipe for an Excel "Data → What-If Analysis → Data Table" sensitivity grid.
+///
+/// One per data table. Two-variable tables have `r2.is_some()`; one-variable tables
+/// have `r2 == None` and use `row_oriented` to disambiguate axis. Deleted inputs
+/// (xlsx `del1="1"` / `del2="1"`) decode as `None`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DataTableFormula {
+    /// Body region of the table — from xlsx `<f ref="...">`. 0-indexed (row, col) pairs.
+    pub range: Dimensions,
+    /// First input cell (xlsx `r1`). `None` if `del1="1"` or attribute absent.
+    pub r1: Option<(u32, u32)>,
+    /// Second input cell (xlsx `r2`). `None` for one-variable tables or if `del2="1"`.
+    pub r2: Option<(u32, u32)>,
+    /// `true` iff the xlsx `r2` attribute was present (regardless of `del2`).
+    /// A two-variable table with `del2="1"` still has `two_dimensional == true`
+    /// but `r2 == None`, so this is not derivable from `r2.is_some()`.
+    /// Canonical — not from the `dt2D` attribute, which non-Excel writers may suppress.
+    pub two_dimensional: bool,
+    /// xlsx `dtr` attribute. Only meaningful when `!two_dimensional`.
+    /// `true` → output is a row (inputs above); `false` → output is a column (inputs left).
+    pub row_oriented: bool,
+}
+
 /// An xlsx Cell Iterator
 pub struct XlsxCellReader<'a, RS>
 where

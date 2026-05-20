@@ -116,7 +116,7 @@ pub use crate::style::{
 };
 pub use crate::xls::{Xls, XlsError, XlsOptions};
 pub use crate::xlsb::{Xlsb, XlsbError};
-pub use crate::xlsx::{Xlsx, XlsxError};
+pub use crate::xlsx::{DataTableFormula, Xlsx, XlsxError};
 
 use crate::vba::VbaProject;
 
