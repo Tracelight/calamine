@@ -82,6 +82,23 @@ impl<'a> From<CellData<'a>> for Data {
     }
 }
 
+/// Formula information returned by full XLSX cell streaming.
+#[derive(Debug, Clone, PartialEq)]
+pub enum CellFormula {
+    /// Formula text stored on a normal formula cell or shared formula parent.
+    Text(String),
+    /// Shared formula child that refers to a previously emitted parent cell.
+    Shared { parent: (u32, u32) },
+}
+
+/// Value and formula information returned by full XLSX cell streaming.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct CellFull<'a> {
+    /// The cached cell value.
+    pub value: DataRef<'a>,
+    /// Formula information, when the cell has a formula.
+    pub formula: Option<CellFormula>,
+}
 /// An enum to represent all different data types that can appear as
 /// a value in a worksheet cell
 #[derive(Debug, Clone, PartialEq, Default)]

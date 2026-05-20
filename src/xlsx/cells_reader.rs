@@ -13,17 +13,45 @@ use std::{
 };
 
 use super::{
-    get_attribute, get_dimension, get_row, get_row_column, read_string, replace_cell_names,
-    Dimensions, XlReader,
+    get_attribute, get_dimension, get_row, get_row_column, parse_color_from_attrs, read_string,
+    replace_cell_names, Dimensions, Theme, XlReader,
 };
 use crate::{
-    datatype::DataRef,
+    datatype::{CellFormula, CellFull, DataRef},
     formats::{format_excel_f64_ref, CellFormat},
+    style::{ColumnWidthRange, FreezePanes, PaneState, RowHeight, SheetFormat, SheetSettings},
     utils::unescape_entity_to_buffer,
     Cell, Style, XlsxError,
 };
 
 type FormulaMap = HashMap<(u32, u32), (i64, i64)>;
+
+/// Item returned by the XLSX worksheet XML stream.
+#[derive(Debug, Clone)]
+pub enum WorksheetItem<'a> {
+    /// Sheet-level settings from `sheetPr` and `sheetViews`.
+    SheetSettings(SheetSettings),
+    /// Default sheet formatting from `sheetFormatPr`.
+    SheetFormat(SheetFormat),
+    /// Column layout range from a `cols` child.
+    ColumnWidthRange(ColumnWidthRange),
+    /// Row layout from `row` attributes.
+    RowHeight(RowHeight),
+    /// A cell from `sheetData`.
+    Cell(Cell<'a, CellFull<'a>>),
+    /// A merged cell region from `mergeCells`.
+    MergedRegion(Dimensions),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WorksheetItemReaderPhase {
+    BeforeSheetData,
+    InCols,
+    InSheetData,
+    AfterSheetData,
+    InMergeCells,
+    Done,
+}
 
 /// An xlsx Cell Iterator
 pub struct XlsxCellReader<'a, RS>
@@ -41,6 +69,26 @@ where
     buf: Vec<u8>,
     cell_buf: Vec<u8>,
     formulas: Vec<Option<(String, FormulaMap)>>,
+}
+
+/// An xlsx worksheet item iterator.
+pub struct XlsxWorksheetItemReader<'a, RS>
+where
+    RS: Read + Seek,
+{
+    xml: XlReader<'a, RS>,
+    strings: &'a [String],
+    formats: &'a [CellFormat],
+    styles: &'a [Style],
+    theme: Option<&'a Theme>,
+    is_1904: bool,
+    row_index: u32,
+    col_index: u32,
+    buf: Vec<u8>,
+    cell_buf: Vec<u8>,
+    shared_formula_parents: HashMap<usize, (u32, u32)>,
+    phase: WorksheetItemReaderPhase,
+    sheet_settings: SheetSettings,
 }
 
 impl<'a, RS> XlsxCellReader<'a, RS>
@@ -395,6 +443,591 @@ where
     }
 }
 
+impl<'a, RS> XlsxWorksheetItemReader<'a, RS>
+where
+    RS: Read + Seek,
+{
+    /// Create a new XLSX worksheet item reader.
+    pub fn new(
+        mut xml: XlReader<'a, RS>,
+        strings: &'a [String],
+        formats: &'a [CellFormat],
+        styles: &'a [Style],
+        theme: Option<&'a Theme>,
+        is_1904: bool,
+    ) -> Result<Self, XlsxError> {
+        let mut buf = Vec::with_capacity(1024);
+        loop {
+            buf.clear();
+            match xml.read_event_into(&mut buf).map_err(XlsxError::Xml)? {
+                Event::Start(e) if e.local_name().as_ref() == b"worksheet" => break,
+                Event::Start(e) => {
+                    return Err(XlsxError::NotAWorksheet(
+                        xml.decoder().decode(e.local_name().as_ref())?.to_string(),
+                    ));
+                }
+                Event::Eof => return Err(XlsxError::XmlEof("worksheet")),
+                _ => (),
+            }
+        }
+
+        Ok(Self {
+            xml,
+            strings,
+            formats,
+            styles,
+            theme,
+            is_1904,
+            row_index: 0,
+            col_index: 0,
+            buf,
+            cell_buf: Vec::with_capacity(1024),
+            shared_formula_parents: HashMap::new(),
+            phase: WorksheetItemReaderPhase::BeforeSheetData,
+            sheet_settings: SheetSettings::default(),
+        })
+    }
+
+    /// Return the next worksheet item from the XLSX XML stream.
+    pub fn next_item(&mut self) -> Result<Option<WorksheetItem<'a>>, XlsxError> {
+        if self.phase == WorksheetItemReaderPhase::Done {
+            return Ok(None);
+        }
+
+        loop {
+            self.buf.clear();
+            match self.xml.read_event_into(&mut self.buf) {
+                Ok(Event::Start(e))
+                    if self.phase == WorksheetItemReaderPhase::BeforeSheetData
+                        && e.local_name().as_ref() == b"dimension" => {}
+                Ok(Event::Start(e))
+                    if self.phase == WorksheetItemReaderPhase::BeforeSheetData
+                        && e.local_name().as_ref() == b"sheetPr" =>
+                {
+                    read_sheet_pr(
+                        &mut self.xml,
+                        &mut self.cell_buf,
+                        &mut self.sheet_settings,
+                        self.theme,
+                    )?;
+                }
+                Ok(Event::Start(e))
+                    if self.phase == WorksheetItemReaderPhase::BeforeSheetData
+                        && e.local_name().as_ref() == b"sheetViews" =>
+                {
+                    read_sheet_views(&mut self.xml, &mut self.cell_buf, &mut self.sheet_settings)?;
+                }
+                Ok(Event::Start(e) | Event::Empty(e))
+                    if self.phase == WorksheetItemReaderPhase::BeforeSheetData
+                        && e.local_name().as_ref() == b"sheetFormatPr" =>
+                {
+                    if let Some(format) = read_sheet_format(&self.xml, &e)? {
+                        return Ok(Some(WorksheetItem::SheetFormat(format)));
+                    }
+                }
+                Ok(Event::Start(e))
+                    if self.phase == WorksheetItemReaderPhase::BeforeSheetData
+                        && e.local_name().as_ref() == b"cols" =>
+                {
+                    self.phase = WorksheetItemReaderPhase::InCols;
+                }
+                Ok(Event::Start(e) | Event::Empty(e))
+                    if self.phase == WorksheetItemReaderPhase::InCols
+                        && e.local_name().as_ref() == b"col" =>
+                {
+                    if let Some(column_width) = read_column_width_range(&self.xml, &e)? {
+                        return Ok(Some(WorksheetItem::ColumnWidthRange(column_width)));
+                    }
+                }
+                Ok(Event::End(e))
+                    if self.phase == WorksheetItemReaderPhase::InCols
+                        && e.local_name().as_ref() == b"cols" =>
+                {
+                    self.phase = WorksheetItemReaderPhase::BeforeSheetData;
+                }
+                Ok(Event::Eof) if self.phase == WorksheetItemReaderPhase::InCols => {
+                    return Err(XlsxError::XmlEof("cols"));
+                }
+                Ok(Event::Start(e))
+                    if self.phase == WorksheetItemReaderPhase::BeforeSheetData
+                        && e.local_name().as_ref() == b"sheetData" =>
+                {
+                    self.phase = WorksheetItemReaderPhase::InSheetData;
+                    return Ok(Some(WorksheetItem::SheetSettings(
+                        self.sheet_settings.clone(),
+                    )));
+                }
+                Ok(Event::Start(row_element))
+                    if self.phase == WorksheetItemReaderPhase::InSheetData
+                        && row_element.local_name().as_ref() == b"row" =>
+                {
+                    let attribute = get_attribute(row_element.attributes(), QName(b"r"))?;
+                    if let Some(range) = attribute {
+                        let row = get_row(range)?;
+                        self.row_index = row;
+                    }
+                    if let Some(row_height) = read_row_height(&self.xml, &row_element)? {
+                        return Ok(Some(WorksheetItem::RowHeight(row_height)));
+                    }
+                }
+                Ok(Event::End(row_element))
+                    if self.phase == WorksheetItemReaderPhase::InSheetData
+                        && row_element.local_name().as_ref() == b"row" =>
+                {
+                    self.row_index += 1;
+                    self.col_index = 0;
+                }
+                Ok(Event::Start(c_element))
+                    if self.phase == WorksheetItemReaderPhase::InSheetData
+                        && c_element.local_name().as_ref() == b"c" =>
+                {
+                    let attribute = get_attribute(c_element.attributes(), QName(b"r"))?;
+                    let pos = if let Some(range) = attribute {
+                        let (row, col) = get_row_column(range)?;
+                        self.col_index = col;
+                        (row, col)
+                    } else {
+                        (self.row_index, self.col_index)
+                    };
+                    let cell = read_cell_full(
+                        &mut self.xml,
+                        &mut self.cell_buf,
+                        self.strings,
+                        self.formats,
+                        self.styles,
+                        self.is_1904,
+                        &mut self.shared_formula_parents,
+                        &c_element,
+                        pos,
+                    )?;
+                    self.col_index += 1;
+                    return Ok(Some(WorksheetItem::Cell(cell)));
+                }
+                Ok(Event::End(e))
+                    if self.phase == WorksheetItemReaderPhase::InSheetData
+                        && e.local_name().as_ref() == b"sheetData" =>
+                {
+                    self.phase = WorksheetItemReaderPhase::AfterSheetData;
+                }
+                Ok(Event::Start(e))
+                    if self.phase == WorksheetItemReaderPhase::AfterSheetData
+                        && e.local_name().as_ref() == b"mergeCells" =>
+                {
+                    self.phase = WorksheetItemReaderPhase::InMergeCells;
+                }
+                Ok(Event::Start(e))
+                    if self.phase == WorksheetItemReaderPhase::InMergeCells
+                        && e.local_name().as_ref() == b"mergeCell" =>
+                {
+                    if let Some(attr) = get_attribute(e.attributes(), QName(b"ref"))? {
+                        return Ok(Some(WorksheetItem::MergedRegion(get_dimension(attr)?)));
+                    }
+                }
+                Ok(Event::End(e))
+                    if self.phase == WorksheetItemReaderPhase::InMergeCells
+                        && e.local_name().as_ref() == b"mergeCells" =>
+                {
+                    self.phase = WorksheetItemReaderPhase::AfterSheetData;
+                }
+                Ok(Event::Eof) => {
+                    self.phase = WorksheetItemReaderPhase::Done;
+                    return Ok(None);
+                }
+                Err(e) => return Err(XlsxError::Xml(e)),
+                _ => (),
+            }
+        }
+    }
+}
+
+fn read_sheet_pr<RS>(
+    xml: &mut XlReader<'_, RS>,
+    buf: &mut Vec<u8>,
+    sheet_settings: &mut SheetSettings,
+    theme: Option<&Theme>,
+) -> Result<(), XlsxError>
+where
+    RS: Read + Seek,
+{
+    loop {
+        buf.clear();
+        match xml.read_event_into(buf) {
+            Ok(Event::Start(e) | Event::Empty(e)) if e.local_name().as_ref() == b"tabColor" => {
+                sheet_settings.tab_color = parse_color_from_attrs(&e.attributes(), theme);
+            }
+            Ok(Event::End(e)) if e.local_name().as_ref() == b"sheetPr" => break,
+            Ok(Event::Eof) => return Err(XlsxError::XmlEof("sheetPr")),
+            Err(e) => return Err(XlsxError::Xml(e)),
+            _ => (),
+        }
+    }
+    Ok(())
+}
+
+fn read_sheet_views<RS>(
+    xml: &mut XlReader<'_, RS>,
+    buf: &mut Vec<u8>,
+    sheet_settings: &mut SheetSettings,
+) -> Result<(), XlsxError>
+where
+    RS: Read + Seek,
+{
+    loop {
+        buf.clear();
+        match xml.read_event_into(buf) {
+            Ok(Event::Empty(e)) if e.local_name().as_ref() == b"sheetView" => {
+                read_sheet_view_settings(&e, sheet_settings)?;
+            }
+            Ok(Event::Start(e)) if e.local_name().as_ref() == b"sheetView" => {
+                read_sheet_view_settings(&e, sheet_settings)?;
+                loop {
+                    buf.clear();
+                    match xml.read_event_into(buf) {
+                        Ok(Event::Start(pane_e) | Event::Empty(pane_e))
+                            if pane_e.local_name().as_ref() == b"pane" =>
+                        {
+                            sheet_settings.freeze_panes = Some(read_freeze_panes(xml, &pane_e)?);
+                        }
+                        Ok(Event::End(end_e)) if end_e.local_name().as_ref() == b"sheetView" => {
+                            break;
+                        }
+                        Ok(Event::Eof) => return Err(XlsxError::XmlEof("sheetView")),
+                        Err(e) => return Err(XlsxError::Xml(e)),
+                        _ => (),
+                    }
+                }
+            }
+            Ok(Event::End(e)) if e.local_name().as_ref() == b"sheetViews" => break,
+            Ok(Event::Eof) => return Err(XlsxError::XmlEof("sheetViews")),
+            Err(e) => return Err(XlsxError::Xml(e)),
+            _ => (),
+        }
+    }
+    Ok(())
+}
+
+fn read_sheet_view_settings(
+    e: &BytesStart<'_>,
+    sheet_settings: &mut SheetSettings,
+) -> Result<(), XlsxError> {
+    for attr in e.attributes() {
+        let attr = attr.map_err(XlsxError::XmlAttr)?;
+        if attr.key.as_ref() == b"showGridLines" {
+            sheet_settings.show_grid_lines =
+                attr.value.as_ref() != b"0" && attr.value.as_ref() != b"false";
+        }
+    }
+    Ok(())
+}
+
+fn read_freeze_panes<RS>(
+    xml: &XlReader<'_, RS>,
+    e: &BytesStart<'_>,
+) -> Result<FreezePanes, XlsxError>
+where
+    RS: Read + Seek,
+{
+    let mut freeze = FreezePanes::default();
+    for attr in e.attributes() {
+        let attr = attr.map_err(XlsxError::XmlAttr)?;
+        match attr.key.as_ref() {
+            b"xSplit" => {
+                if let Ok(s) = xml.decoder().decode(&attr.value) {
+                    freeze.x_split = s.parse().unwrap_or(0.0);
+                }
+            }
+            b"ySplit" => {
+                if let Ok(s) = xml.decoder().decode(&attr.value) {
+                    freeze.y_split = s.parse().unwrap_or(0.0);
+                }
+            }
+            b"topLeftCell" => {
+                if let Ok(s) = xml.decoder().decode(&attr.value) {
+                    freeze.top_left_cell = Some(s.to_string());
+                }
+            }
+            b"state" => {
+                if let Ok(s) = xml.decoder().decode(&attr.value) {
+                    freeze.state = match s.as_ref() {
+                        "frozen" => PaneState::Frozen,
+                        "frozenSplit" => PaneState::FrozenSplit,
+                        "split" => PaneState::Split,
+                        _ => PaneState::Frozen,
+                    };
+                }
+            }
+            _ => (),
+        }
+    }
+    Ok(freeze)
+}
+
+fn read_sheet_format<RS>(
+    xml: &XlReader<'_, RS>,
+    e: &BytesStart<'_>,
+) -> Result<Option<SheetFormat>, XlsxError>
+where
+    RS: Read + Seek,
+{
+    let mut format = SheetFormat::default();
+    let mut has_attr = false;
+    for attr in e.attributes() {
+        let attr = attr.map_err(XlsxError::XmlAttr)?;
+        match attr.key.as_ref() {
+            b"baseColWidth" => {
+                if let Ok(width_str) = xml.decoder().decode(&attr.value) {
+                    if let Ok(width) = width_str.parse::<u32>() {
+                        format.base_column_width = Some(width);
+                        has_attr = true;
+                    }
+                }
+            }
+            b"defaultColWidth" => {
+                if let Ok(width_str) = xml.decoder().decode(&attr.value) {
+                    if let Ok(width) = width_str.parse::<f64>() {
+                        format.default_column_width = Some(width);
+                        has_attr = true;
+                    }
+                }
+            }
+            b"defaultRowHeight" => {
+                if let Ok(height_str) = xml.decoder().decode(&attr.value) {
+                    if let Ok(height) = height_str.parse::<f64>() {
+                        format.default_row_height = Some(height);
+                        has_attr = true;
+                    }
+                }
+            }
+            _ => (),
+        }
+    }
+    Ok(has_attr.then_some(format))
+}
+
+fn read_column_width_range<RS>(
+    xml: &XlReader<'_, RS>,
+    col_e: &BytesStart<'_>,
+) -> Result<Option<ColumnWidthRange>, XlsxError>
+where
+    RS: Read + Seek,
+{
+    let mut col_info = None;
+    let mut max_col: Option<u32> = None;
+    let mut width = 0.0;
+    let mut custom_width = false;
+    let mut hidden = false;
+    let mut best_fit = false;
+    let mut outline_level: u8 = 0;
+    let mut collapsed = false;
+    let mut style = None;
+
+    for attr in col_e.attributes() {
+        let attr = attr.map_err(XlsxError::XmlAttr)?;
+        match attr.key.as_ref() {
+            b"min" => {
+                if let Ok(min_str) = xml.decoder().decode(&attr.value) {
+                    if let Ok(min_val) = min_str.parse::<u32>() {
+                        col_info = min_val.checked_sub(1);
+                    }
+                }
+            }
+            b"max" => {
+                if let Ok(max_str) = xml.decoder().decode(&attr.value) {
+                    if let Ok(max_val) = max_str.parse::<u32>() {
+                        max_col = max_val.checked_sub(1);
+                    }
+                }
+            }
+            b"width" => {
+                if let Ok(width_str) = xml.decoder().decode(&attr.value) {
+                    if let Ok(w) = width_str.parse::<f64>() {
+                        width = w;
+                    }
+                }
+            }
+            b"customWidth" => custom_width = attr.value.as_ref() != b"0",
+            b"hidden" => hidden = attr.value.as_ref() != b"0",
+            b"bestFit" => best_fit = attr.value.as_ref() != b"0",
+            b"outlineLevel" => {
+                if let Ok(level_str) = xml.decoder().decode(&attr.value) {
+                    if let Ok(level) = level_str.parse::<u8>() {
+                        outline_level = level.min(7);
+                    }
+                }
+            }
+            b"collapsed" => collapsed = attr.value.as_ref() != b"0",
+            b"style" => {
+                if let Ok(value) = atoi_simd::parse::<u32>(attr.value.as_ref()) {
+                    style = Some(value);
+                }
+            }
+            _ => (),
+        }
+    }
+
+    let Some(min) = col_info else {
+        return Ok(None);
+    };
+
+    if min > 16383 {
+        return Ok(None);
+    }
+
+    let max = max_col.unwrap_or(min).max(min).min(16383);
+    Ok(Some(ColumnWidthRange {
+        first_column: min,
+        last_column: max,
+        width,
+        custom_width,
+        hidden,
+        best_fit,
+        outline_level,
+        collapsed,
+        style,
+    }))
+}
+
+fn read_row_height<RS>(
+    xml: &XlReader<'_, RS>,
+    row_e: &BytesStart<'_>,
+) -> Result<Option<RowHeight>, XlsxError>
+where
+    RS: Read + Seek,
+{
+    let mut row_num = None;
+    let mut height = 0.0;
+    let mut custom_height = false;
+    let mut hidden = false;
+    let mut thick_top = false;
+    let mut thick_bottom = false;
+    let mut outline_level: u8 = 0;
+    let mut collapsed = false;
+    let mut style = None;
+
+    for attr in row_e.attributes() {
+        let attr = attr.map_err(XlsxError::XmlAttr)?;
+        match attr.key.as_ref() {
+            b"r" => {
+                if let Ok(row_str) = xml.decoder().decode(&attr.value) {
+                    if let Ok(r) = row_str.parse::<u32>() {
+                        row_num = r.checked_sub(1);
+                    }
+                }
+            }
+            b"ht" => {
+                if let Ok(height_str) = xml.decoder().decode(&attr.value) {
+                    if let Ok(h) = height_str.parse::<f64>() {
+                        height = h;
+                    }
+                }
+            }
+            b"customHeight" => custom_height = attr.value.as_ref() != b"0",
+            b"hidden" => hidden = attr.value.as_ref() != b"0",
+            b"thickTop" => thick_top = attr.value.as_ref() != b"0",
+            b"thickBot" => thick_bottom = attr.value.as_ref() != b"0",
+            b"outlineLevel" => {
+                if let Ok(level_str) = xml.decoder().decode(&attr.value) {
+                    if let Ok(l) = level_str.parse::<u8>() {
+                        outline_level = l.min(7);
+                    }
+                }
+            }
+            b"collapsed" => collapsed = attr.value.as_ref() != b"0",
+            b"s" => {
+                if let Ok(value) = atoi_simd::parse::<u32>(attr.value.as_ref()) {
+                    style = Some(value);
+                }
+            }
+            _ => (),
+        }
+    }
+
+    let Some(row) = row_num else {
+        return Ok(None);
+    };
+
+    if custom_height
+        || hidden
+        || thick_top
+        || thick_bottom
+        || height > 0.0
+        || outline_level > 0
+        || collapsed
+        || style.is_some()
+    {
+        Ok(Some(RowHeight {
+            row,
+            height,
+            custom_height,
+            hidden,
+            thick_top,
+            thick_bottom,
+            outline_level,
+            collapsed,
+            style,
+        }))
+    } else {
+        Ok(None)
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn read_cell_full<'a, RS>(
+    xml: &mut XlReader<'_, RS>,
+    cell_buf: &mut Vec<u8>,
+    strings: &'a [String],
+    formats: &'a [CellFormat],
+    styles: &'a [Style],
+    is_1904: bool,
+    shared_formula_parents: &mut HashMap<usize, (u32, u32)>,
+    c_element: &BytesStart<'_>,
+    pos: (u32, u32),
+) -> Result<Cell<'a, CellFull<'a>>, XlsxError>
+where
+    RS: Read + Seek,
+{
+    let mut value = DataRef::Empty;
+    let mut formula = None;
+    let mut style = None;
+
+    let style_id =
+        if let Ok(Some(style_id_str)) = get_attribute(c_element.attributes(), QName(b"s")) {
+            atoi_simd::parse::<usize>(style_id_str).unwrap_or(0)
+        } else {
+            0
+        };
+
+    if style_id < styles.len() {
+        style = Some(&styles[style_id]);
+    }
+
+    loop {
+        cell_buf.clear();
+        match xml.read_event_into(cell_buf) {
+            Ok(Event::Start(e)) => match e.local_name().as_ref() {
+                b"v" | b"is" => {
+                    value = read_value(strings, formats, is_1904, xml, &e, c_element)?;
+                }
+                b"f" => {
+                    formula = read_cell_full_formula(xml, shared_formula_parents, pos, &e)?;
+                }
+                _ => return Err(XlsxError::UnexpectedNode("v, f, or is")),
+            },
+            Ok(Event::End(e)) if e.local_name().as_ref() == b"c" => break,
+            Ok(Event::Eof) => return Err(XlsxError::XmlEof("c")),
+            Err(e) => return Err(XlsxError::Xml(e)),
+            _ => (),
+        }
+    }
+
+    let cell = CellFull { value, formula };
+    if let Some(cell_style) = style {
+        Ok(Cell::with_style(pos, cell, cell_style))
+    } else {
+        Ok(Cell::new(pos, cell))
+    }
+}
+
 fn read_value<'s, RS>(
     strings: &'s [String],
     formats: &[CellFormat],
@@ -433,6 +1066,48 @@ where
         }
         _n => return Err(XlsxError::UnexpectedNode("v, f, or is")),
     })
+}
+
+fn read_cell_full_formula<RS>(
+    xml: &mut XlReader<'_, RS>,
+    shared_formula_parents: &mut HashMap<usize, (u32, u32)>,
+    pos: (u32, u32),
+    e: &BytesStart<'_>,
+) -> Result<Option<CellFormula>, XlsxError>
+where
+    RS: Read + Seek,
+{
+    let is_shared = matches!(get_attribute(e.attributes(), QName(b"t"))?, Some(b"shared"));
+
+    if !is_shared {
+        let formula = read_formula(xml, e)?.unwrap_or_default();
+        return Ok(Some(CellFormula::Text(formula)));
+    }
+
+    let shared_index = match get_attribute(e.attributes(), QName(b"si"))? {
+        Some(res) => match atoi_simd::parse::<usize>(res) {
+            Ok(res) => res,
+            Err(_) => return Err(XlsxError::Unexpected("si attribute must be a number")),
+        },
+        None => {
+            return Err(XlsxError::Unexpected(
+                "si attribute is mandatory if it is shared",
+            ));
+        }
+    };
+
+    let formula = read_formula(xml, e)?.unwrap_or_default();
+    if !formula.is_empty() {
+        shared_formula_parents.insert(shared_index, pos);
+        return Ok(Some(CellFormula::Text(formula)));
+    }
+
+    let parent = shared_formula_parents
+        .get(&shared_index)
+        .copied()
+        .ok_or(XlsxError::Unexpected("shared formula parent not found"))?;
+
+    Ok(Some(CellFormula::Shared { parent }))
 }
 
 /// read the contents of a <v> cell

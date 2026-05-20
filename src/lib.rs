@@ -104,19 +104,21 @@ use std::ops::{Index, IndexMut};
 use std::path::Path;
 
 pub use crate::auto::{open_workbook_auto, open_workbook_auto_from_rs, Sheets};
-pub use crate::datatype::{CellData, Data, DataRef, DataType, ExcelDateTime, ExcelDateTimeType};
+pub use crate::datatype::{
+    CellData, CellFormula, CellFull, Data, DataRef, DataType, ExcelDateTime, ExcelDateTimeType,
+};
 pub use crate::de::{DeError, RangeDeserializer, RangeDeserializerBuilder, ToCellDeserializer};
 pub use crate::errors::Error;
 pub use crate::ods::{Ods, OdsError};
 pub use crate::style::{
-    Alignment, Border, BorderStyle, Borders, Color, ColumnWidth, Fill, FillPattern, Font,
-    FontStyle, FontWeight, FreezePanes, HorizontalAlignment, NumberFormat, PaneState, Protection,
-    RowHeight, SheetSettings, Style, TextRotation, UnderlineStyle, VerticalAlignment,
-    WorksheetLayout,
+    Alignment, Border, BorderStyle, Borders, Color, ColumnWidth, ColumnWidthRange, Fill,
+    FillPattern, Font, FontStyle, FontWeight, FreezePanes, HorizontalAlignment, NumberFormat,
+    PaneState, Protection, RowHeight, SheetFormat, SheetSettings, Style, TextRotation,
+    UnderlineStyle, VerticalAlignment, WorksheetLayout,
 };
 pub use crate::xls::{Xls, XlsError, XlsOptions};
 pub use crate::xlsb::{Xlsb, XlsbError};
-pub use crate::xlsx::{Xlsx, XlsxError};
+pub use crate::xlsx::{WorksheetItem, Xlsx, XlsxError, XlsxWorksheetItemReader};
 
 use crate::vba::VbaProject;
 
@@ -438,6 +440,7 @@ impl<'a> CellType for DataRef<'a> {}
 impl CellType for String {}
 impl CellType for usize {} // for tests
 impl<'a> CellType for CellData<'a> {}
+impl<'a> CellType for CellFull<'a> {}
 impl CellType for Style {}
 impl CellType for &Style {}
 

@@ -38,7 +38,7 @@ use crate::{
     Cell, CellErrorType, Data, Dimensions, HeaderRow, Metadata, Range, Reader, ReaderRef, Sheet,
     SheetType, SheetVisible, Style, Table,
 };
-pub use cells_reader::XlsxCellReader;
+pub use cells_reader::{WorksheetItem, XlsxCellReader, XlsxWorksheetItemReader};
 pub use comments::{
     Comment, LegacyCommentsMap, Person, PersonsMap, RichTextRun, ThreadedComment,
     ThreadedCommentsMap,
@@ -988,144 +988,6 @@ impl<RS: Read + Seek> Xlsx<RS> {
                             self.styles.push(style.with_style_id(style_index));
 
                             // Also add format for backward compatibility
-                            self.formats.push(
-                                e.attributes()
-                                    .filter_map(|a| a.ok())
-                                    .find(|a| a.key == QName(b"numFmtId"))
-                                    .map_or(CellFormat::Other, |a| {
-                                        match number_formats.get(&*a.value) {
-                                            Some(fmt) => detect_custom_number_format(fmt),
-                                            None => builtin_format_by_id(&a.value),
-                                        }
-                                    }),
-                            );
-                        }
-                        Ok(Event::Empty(e)) if e.local_name().as_ref() == b"xf" => {
-                            let mut xf_id: usize = 0;
-                            let mut font_id: Option<usize> = None;
-                            let mut fill_id: Option<usize> = None;
-                            let mut border_id: Option<usize> = None;
-                            let mut apply_font = false;
-                            let mut apply_fill = false;
-                            let mut apply_border = false;
-                            let mut num_fmt_id: Option<u32> = None;
-
-                            for a in e.attributes() {
-                                let a = a.map_err(XlsxError::XmlAttr)?;
-                                match a.key.as_ref() {
-                                    b"xfId" => {
-                                        xf_id =
-                                            xml.decoder().decode(&a.value)?.parse().unwrap_or(0);
-                                    }
-                                    b"fontId" => {
-                                        font_id = xml.decoder().decode(&a.value)?.parse().ok();
-                                    }
-                                    b"fillId" => {
-                                        fill_id = xml.decoder().decode(&a.value)?.parse().ok();
-                                    }
-                                    b"borderId" => {
-                                        border_id = xml.decoder().decode(&a.value)?.parse().ok();
-                                    }
-                                    b"applyFont" => {
-                                        apply_font =
-                                            a.value.as_ref() == b"1" || a.value.as_ref() == b"true";
-                                    }
-                                    b"applyFill" => {
-                                        apply_fill =
-                                            a.value.as_ref() == b"1" || a.value.as_ref() == b"true";
-                                    }
-                                    b"applyBorder" => {
-                                        apply_border =
-                                            a.value.as_ref() == b"1" || a.value.as_ref() == b"true";
-                                    }
-                                    b"numFmtId" => {
-                                        num_fmt_id = xml.decoder().decode(&a.value)?.parse().ok();
-                                    }
-                                    _ => {}
-                                }
-                            }
-
-                            let mut style = cell_style_xfs.get(xf_id).cloned().unwrap_or_default();
-
-                            if apply_font {
-                                if let Some(id) = font_id {
-                                    if let Some(font) = fonts.get(id) {
-                                        style = style.with_font(font.clone());
-                                    }
-                                }
-                            }
-                            if apply_fill {
-                                if let Some(id) = fill_id {
-                                    if let Some(fill) = fills.get(id) {
-                                        style = style.with_fill(fill.clone());
-                                    }
-                                }
-                            }
-                            if apply_border {
-                                if let Some(id) = border_id {
-                                    if let Some(border) = borders.get(id) {
-                                        style = style.with_borders(border.clone());
-                                    }
-                                }
-                            }
-
-                            if let Some(nfid) = num_fmt_id {
-                                let fmt_id_bytes = nfid.to_string().into_bytes();
-                                let format_code = match number_formats.get(&fmt_id_bytes) {
-                                    Some(fmt) => fmt.clone(),
-                                    None => match nfid {
-                                        0 => "General".to_string(),
-                                        1 => "0".to_string(),
-                                        2 => "0.00".to_string(),
-                                        3 => "#,##0".to_string(),
-                                        4 => "#,##0.00".to_string(),
-                                        9 => "0%".to_string(),
-                                        10 => "0.00%".to_string(),
-                                        11 => "0.00E+00".to_string(),
-                                        12 => "# ?/?".to_string(),
-                                        13 => "# ??/??".to_string(),
-                                        14 => "mm-dd-yy".to_string(),
-                                        15 => "d-mmm-yy".to_string(),
-                                        16 => "d-mmm".to_string(),
-                                        17 => "mmm-yy".to_string(),
-                                        18 => "h:mm AM/PM".to_string(),
-                                        19 => "h:mm:ss AM/PM".to_string(),
-                                        20 => "h:mm".to_string(),
-                                        21 => "h:mm:ss".to_string(),
-                                        22 => "m/d/yy h:mm".to_string(),
-                                        37 => "#,##0 ;(#,##0)".to_string(),
-                                        38 => "#,##0 ;[Red](#,##0)".to_string(),
-                                        39 => "#,##0.00;(#,##0.00)".to_string(),
-                                        40 => "#,##0.00;[Red](#,##0.00)".to_string(),
-                                        41 => {
-                                            "_(* #,##0_);_(* (#,##0);_(* \"-\"_);_(@_)".to_string()
-                                        }
-                                        42 => "_($* #,##0_);_($* (#,##0);_($* \"-\"_);_(@_)"
-                                            .to_string(),
-                                        43 => "_(* #,##0.00_);_(* (#,##0.00);_(* \"-\"??_);_(@_)"
-                                            .to_string(),
-                                        44 => {
-                                            "_($* #,##0.00_);_($* (#,##0.00);_($* \"-\"??_);_(@_)"
-                                                .to_string()
-                                        }
-                                        45 => "mm:ss".to_string(),
-                                        46 => "[h]:mm:ss".to_string(),
-                                        47 => "mmss.0".to_string(),
-                                        48 => "##0.0E+0".to_string(),
-                                        49 => "@".to_string(),
-                                        _ => "General".to_string(),
-                                    },
-                                };
-
-                                use crate::style::NumberFormat;
-                                let number_format = NumberFormat::new(format_code).with_id(nfid);
-                                style = style.with_number_format(number_format);
-                            }
-
-                            style.xf_id = Some(xf_id);
-                            let style_index = self.styles.len() as u32;
-                            self.styles.push(style.with_style_id(style_index));
-
                             self.formats.push(
                                 e.attributes()
                                     .filter_map(|a| a.ok())
@@ -2344,6 +2206,29 @@ impl<RS: Read + Seek> Xlsx<RS> {
         let formats = &self.formats;
         let styles = &self.styles;
         XlsxCellReader::new(xml, strings, formats, styles, is_1904)
+    }
+
+    /// Get the worksheet item reader for a worksheet.
+    ///
+    /// This reader streams worksheet layout metadata, cells, and merged regions
+    /// from a single worksheet XML pass.
+    pub fn worksheet_items_reader<'a>(
+        &'a mut self,
+        name: &str,
+    ) -> Result<XlsxWorksheetItemReader<'a, RS>, XlsxError> {
+        let (_, path) = self
+            .sheets
+            .iter()
+            .find(|&(n, _)| n == name)
+            .ok_or_else(|| XlsxError::WorksheetNotFound(name.into()))?;
+        let xml = xml_reader(&mut self.zip, path)
+            .ok_or_else(|| XlsxError::WorksheetNotFound(name.into()))??;
+        let is_1904 = self.is_1904;
+        let strings = &self.strings;
+        let formats = &self.formats;
+        let styles = &self.styles;
+        let theme = self.theme.as_ref();
+        XlsxWorksheetItemReader::new(xml, strings, formats, styles, theme, is_1904)
     }
 
     /// Get the styles for a worksheet.

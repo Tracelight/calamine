@@ -630,6 +630,8 @@ pub struct ColumnWidth {
     pub outline_level: u8,
     /// Whether the outline group is collapsed
     pub collapsed: bool,
+    /// cellXfs index referenced by the column's `style` attribute, if any
+    pub style: Option<u32>,
 }
 
 impl ColumnWidth {
@@ -643,6 +645,7 @@ impl ColumnWidth {
             best_fit: false,
             outline_level: 0,
             collapsed: false,
+            style: None,
         }
     }
 
@@ -676,10 +679,39 @@ impl ColumnWidth {
         self
     }
 
+    /// Set the cellXfs index from `<col style="N">`
+    pub fn with_style(mut self, style: u32) -> Self {
+        self.style = Some(style);
+        self
+    }
+
     /// Check if column is visible
     pub fn is_visible(&self) -> bool {
         !self.hidden
     }
+}
+
+/// Column width information for an inclusive column range.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ColumnWidthRange {
+    /// First column index (0-based)
+    pub first_column: u32,
+    /// Last column index (0-based, inclusive)
+    pub last_column: u32,
+    /// Width in Excel units (characters)
+    pub width: f64,
+    /// Whether the width is custom (manually set)
+    pub custom_width: bool,
+    /// Whether the column range is hidden
+    pub hidden: bool,
+    /// Best fit width
+    pub best_fit: bool,
+    /// Outline level (0-7) for column grouping
+    pub outline_level: u8,
+    /// Whether the outline group is collapsed
+    pub collapsed: bool,
+    /// cellXfs index referenced by the column range's `style` attribute, if any
+    pub style: Option<u32>,
 }
 
 /// Row height information
@@ -701,6 +733,8 @@ pub struct RowHeight {
     pub outline_level: u8,
     /// Whether the outline group is collapsed
     pub collapsed: bool,
+    /// cellXfs index referenced by the row's `s` attribute, if any
+    pub style: Option<u32>,
 }
 
 impl RowHeight {
@@ -715,6 +749,7 @@ impl RowHeight {
             thick_bottom: false,
             outline_level: 0,
             collapsed: false,
+            style: None,
         }
     }
 
@@ -751,6 +786,12 @@ impl RowHeight {
     /// Set collapsed flag
     pub fn with_collapsed(mut self, collapsed: bool) -> Self {
         self.collapsed = collapsed;
+        self
+    }
+
+    /// Set the cellXfs index from `<row s="N">`
+    pub fn with_style(mut self, style: u32) -> Self {
+        self.style = Some(style);
         self
     }
 
@@ -804,6 +845,17 @@ impl Default for SheetSettings {
             tab_color: None,
         }
     }
+}
+
+/// Default worksheet formatting information.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SheetFormat {
+    /// Base column width (number of characters of the Normal style font)
+    pub base_column_width: Option<u32>,
+    /// Default column width
+    pub default_column_width: Option<f64>,
+    /// Default row height
+    pub default_row_height: Option<f64>,
 }
 
 /// Worksheet layout information
