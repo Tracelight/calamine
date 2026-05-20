@@ -2912,3 +2912,104 @@ fn test_color_parsing_with_styles() {
         "Should find at least some cells with font colors"
     );
 }
+
+// B1 = (0, 1), B2 = (1, 1) in 0-indexed (row, col).
+
+#[test]
+fn data_table_2var() {
+    let mut xlsx: Xlsx<_> = wb("dt_2var.xlsx");
+    let tables = xlsx.worksheet_data_tables("Sheet1").unwrap();
+    assert_eq!(tables.len(), 1);
+    let dt = &tables[0];
+    assert!(dt.two_dimensional);
+    assert_eq!(dt.r1, Some((0, 1)));
+    assert_eq!(dt.r2, Some((1, 1)));
+}
+
+#[test]
+fn data_table_1var_row() {
+    let mut xlsx: Xlsx<_> = wb("dt_1var_row.xlsx");
+    let tables = xlsx.worksheet_data_tables("Sheet1").unwrap();
+    assert_eq!(tables.len(), 1);
+    let dt = &tables[0];
+    assert!(!dt.two_dimensional);
+    assert!(dt.row_oriented);
+    assert_eq!(dt.r1, Some((0, 1)));
+    assert_eq!(dt.r2, None);
+}
+
+#[test]
+fn data_table_1var_col() {
+    let mut xlsx: Xlsx<_> = wb("dt_1var_col.xlsx");
+    let tables = xlsx.worksheet_data_tables("Sheet1").unwrap();
+    assert_eq!(tables.len(), 1);
+    let dt = &tables[0];
+    assert!(!dt.two_dimensional);
+    assert!(!dt.row_oriented);
+    assert_eq!(dt.r1, Some((0, 1)));
+    assert_eq!(dt.r2, None);
+}
+
+#[test]
+fn data_table_2var_del1() {
+    let mut xlsx: Xlsx<_> = wb("dt_2var_del.xlsx");
+    let tables = xlsx.worksheet_data_tables("Sheet1").unwrap();
+    assert_eq!(tables.len(), 1);
+    let dt = &tables[0];
+    assert_eq!(dt.r1, None);
+    assert!(dt.r2.is_some());
+}
+
+#[test]
+fn data_table_2var_del2() {
+    let mut xlsx: Xlsx<_> = wb("dt_2var_del2.xlsx");
+    let tables = xlsx.worksheet_data_tables("Sheet1").unwrap();
+    assert_eq!(tables.len(), 1);
+    let dt = &tables[0];
+    assert!(dt.r1.is_some());
+    assert_eq!(dt.r2, None);
+}
+
+#[test]
+fn data_table_single_pass_invariant() {
+    use std::io::{Read, Seek, SeekFrom};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Arc;
+
+    struct CountingReader<R> {
+        inner: R,
+        bytes_read: Arc<AtomicU64>,
+    }
+    impl<R: Read> Read for CountingReader<R> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let n = self.inner.read(buf)?;
+            self.bytes_read.fetch_add(n as u64, Ordering::SeqCst);
+            Ok(n)
+        }
+    }
+    impl<R: Seek> Seek for CountingReader<R> {
+        fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+            self.inner.seek(pos)
+        }
+    }
+
+    let counter = Arc::new(AtomicU64::new(0));
+    let file = std::fs::File::open(test_path("dt_2var.xlsx")).unwrap();
+    let counting = CountingReader {
+        inner: file,
+        bytes_read: Arc::clone(&counter),
+    };
+    let mut xlsx = Xlsx::new(counting).unwrap();
+
+    let _ = xlsx.worksheet_formula("Sheet1").unwrap();
+    let bytes_after_formula = counter.load(Ordering::SeqCst);
+
+    let _ = xlsx.worksheet_data_tables("Sheet1").unwrap();
+    let bytes_after_data_tables = counter.load(Ordering::SeqCst);
+
+    assert_eq!(
+        bytes_after_formula, bytes_after_data_tables,
+        "worksheet_data_tables read additional bytes after worksheet_formula; \
+         expected single-pass parse via cache"
+    );
+}
