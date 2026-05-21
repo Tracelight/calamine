@@ -2659,27 +2659,13 @@ fn test_worksheet_layout() {
     let mut xlsx: Xlsx<_> = wb("styles.xlsx");
     let layout = xlsx.worksheet_layout("Sheet 1").unwrap();
 
-    // Check what layout information is actually available
-    // Some Excel files may not have explicit layout information
-    if layout.default_column_width.is_none() {
-        // This might be expected for some Excel files
-        assert!(
-            true,
-            "Layout parsing works even without default column width"
-        );
-    } else {
-        assert_eq!(layout.default_column_width, Some(8.43));
+    if let Some(default_column_width) = layout.default_column_width {
+        assert_eq!(default_column_width, 8.43);
     }
 
-    if layout.default_row_height.is_none() {
-        assert!(true, "Layout parsing works even without default row height");
-    } else {
-        assert_eq!(layout.default_row_height, Some(15.0));
+    if let Some(default_row_height) = layout.default_row_height {
+        assert_eq!(default_row_height, 15.0);
     }
-
-    // Just verify we can read the layout without panicking
-    assert!(layout.column_widths.len() >= 0);
-    assert!(layout.row_heights.len() >= 0);
 }
 
 #[test]
@@ -2881,12 +2867,6 @@ fn test_color_parsing_with_styles() {
             if let Some(font) = style.get_font() {
                 if let Some(color) = font.color {
                     cells_with_font_colors += 1;
-
-                    // Verify color values are valid (0-255 range)
-                    assert!(color.red <= 255, "Red component should be <= 255");
-                    assert!(color.green <= 255, "Green component should be <= 255");
-                    assert!(color.blue <= 255, "Blue component should be <= 255");
-                    assert!(color.alpha <= 255, "Alpha component should be <= 255");
 
                     // Test specific known colors from the styles.xlsx file
                     if row == 4 && col == 0 {

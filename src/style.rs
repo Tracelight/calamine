@@ -100,9 +100,7 @@ impl fmt::Display for Color {
 }
 
 /// Border style enumeration
-#[derive(Debug, Clone, Copy, PartialEq)]
-#[derive(Default)]
-#[derive(strum::Display)]
+#[derive(Debug, Clone, Copy, PartialEq, Default, strum::Display)]
 #[strum(serialize_all = "camelCase")]
 pub enum BorderStyle {
     /// No border
@@ -135,7 +133,6 @@ pub enum BorderStyle {
     /// Slant dash dot border
     SlantDashDot,
 }
-
 
 /// Border side
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -201,8 +198,7 @@ impl Borders {
 }
 
 /// Font weight
-#[derive(Debug, Clone, Copy, PartialEq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum FontWeight {
     /// Normal weight
     #[default]
@@ -211,10 +207,8 @@ pub enum FontWeight {
     Bold,
 }
 
-
 /// Font style
-#[derive(Debug, Clone, Copy, PartialEq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum FontStyle {
     /// Normal style
     #[default]
@@ -223,11 +217,8 @@ pub enum FontStyle {
     Italic,
 }
 
-
 /// Underline style
-#[derive(Debug, Clone, Copy, PartialEq)]
-#[derive(Default)]
-#[derive(strum::Display)]
+#[derive(Debug, Clone, Copy, PartialEq, Default, strum::Display)]
 #[strum(serialize_all = "camelCase")]
 pub enum UnderlineStyle {
     /// No underline
@@ -242,7 +233,6 @@ pub enum UnderlineStyle {
     /// Double accounting underline
     DoubleAccounting,
 }
-
 
 /// Font properties
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -350,9 +340,7 @@ impl Font {
 }
 
 /// Horizontal alignment
-#[derive(Debug, Clone, Copy, PartialEq)]
-#[derive(Default)]
-#[derive(strum::Display)]
+#[derive(Debug, Clone, Copy, PartialEq, Default, strum::Display)]
 #[strum(serialize_all = "camelCase")]
 pub enum HorizontalAlignment {
     /// Left alignment
@@ -374,11 +362,8 @@ pub enum HorizontalAlignment {
     General,
 }
 
-
 /// Vertical alignment
-#[derive(Debug, Clone, Copy, PartialEq)]
-#[derive(Default)]
-#[derive(strum::Display)]
+#[derive(Debug, Clone, Copy, PartialEq, Default, strum::Display)]
 #[strum(serialize_all = "camelCase")]
 pub enum VerticalAlignment {
     /// Top alignment
@@ -394,10 +379,8 @@ pub enum VerticalAlignment {
     Distributed,
 }
 
-
 /// Text rotation in degrees
-#[derive(Debug, Clone, Copy, PartialEq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum TextRotation {
     /// No rotation
     #[default]
@@ -407,7 +390,6 @@ pub enum TextRotation {
     /// Stacked text
     Stacked,
 }
-
 
 /// Cell alignment properties
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -470,9 +452,7 @@ impl Alignment {
 }
 
 /// Fill pattern type
-#[derive(Debug, Clone, Copy, PartialEq)]
-#[derive(Default)]
-#[derive(strum::Display)]
+#[derive(Debug, Clone, Copy, PartialEq, Default, strum::Display)]
 #[strum(serialize_all = "camelCase")]
 pub enum FillPattern {
     /// No fill
@@ -515,7 +495,6 @@ pub enum FillPattern {
     /// Light trellis pattern
     LightTrellis,
 }
-
 
 /// Fill properties
 #[derive(Debug, Clone, Default, PartialEq)]

@@ -620,7 +620,11 @@ fn parse_sheet_metadata(
     Ok((pos, Sheet { name, typ, visible }))
 }
 
-fn parse_number<'a>(r: &[u8], formats: &[CellFormat], is_1904: bool) -> Result<Cell<'a, Data>, XlsError> {
+fn parse_number<'a>(
+    r: &[u8],
+    formats: &[CellFormat],
+    is_1904: bool,
+) -> Result<Cell<'a, Data>, XlsError> {
     if r.len() < 14 {
         return Err(XlsError::Len {
             typ: "number",
@@ -674,7 +678,11 @@ fn parse_err(e: u8) -> Result<Data, XlsError> {
     }
 }
 
-fn parse_rk<'a>(r: &[u8], formats: &[CellFormat], is_1904: bool) -> Result<Cell<'a, Data>, XlsError> {
+fn parse_rk<'a>(
+    r: &[u8],
+    formats: &[CellFormat],
+    is_1904: bool,
+) -> Result<Cell<'a, Data>, XlsError> {
     if r.len() < 10 {
         return Err(XlsError::Len {
             typ: "rk",
@@ -821,7 +829,11 @@ fn parse_string(r: &[u8], encoding: &XlsEncoding, biff: Biff) -> Result<String, 
     Ok(s)
 }
 
-fn parse_label<'a>(r: &[u8], encoding: &XlsEncoding, biff: Biff) -> Result<Cell<'a, Data>, XlsError> {
+fn parse_label<'a>(
+    r: &[u8],
+    encoding: &XlsEncoding,
+    biff: Biff,
+) -> Result<Cell<'a, Data>, XlsError> {
     if r.len() < 6 {
         return Err(XlsError::Len {
             typ: "label",
