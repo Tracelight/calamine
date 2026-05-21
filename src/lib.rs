@@ -439,10 +439,10 @@ impl CellType for String {}
 impl CellType for usize {} // for tests
 impl<'a> CellType for CellData<'a> {}
 impl CellType for Style {}
-impl<'a> CellType for &'a Style {}
+impl CellType for &Style {}
 
 // Implement Default for &'a Style using a static reference
-impl<'a> Default for &'a Style {
+impl Default for &Style {
     fn default() -> Self {
         static DEFAULT_STYLE: Style = Style {
             font: None,

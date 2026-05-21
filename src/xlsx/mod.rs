@@ -77,22 +77,20 @@ fn parse_color_from_attrs(attributes: &Attributes, theme: Option<&Theme>) -> Opt
     let mut theme_idx: Option<u8> = None;
     let mut tint: f64 = 0.0;
 
-    for attr in attributes.clone() {
-        if let Ok(attr) = attr {
-            match attr.key.as_ref() {
-                b"rgb" => rgb_bytes = Some(attr.value),
-                b"theme" => {
-                    if let Ok(s) = std::str::from_utf8(&attr.value) {
-                        theme_idx = s.parse().ok();
-                    }
+    for attr in attributes.clone().flatten() {
+        match attr.key.as_ref() {
+            b"rgb" => rgb_bytes = Some(attr.value),
+            b"theme" => {
+                if let Ok(s) = std::str::from_utf8(&attr.value) {
+                    theme_idx = s.parse().ok();
                 }
-                b"tint" => {
-                    if let Ok(s) = std::str::from_utf8(&attr.value) {
-                        tint = s.parse().unwrap_or(0.0);
-                    }
-                }
-                _ => {}
             }
+            b"tint" => {
+                if let Ok(s) = std::str::from_utf8(&attr.value) {
+                    tint = s.parse().unwrap_or(0.0);
+                }
+            }
+            _ => {}
         }
     }
 
@@ -2954,7 +2952,7 @@ impl<RS: Read + Seek> Xlsx<RS> {
             }
         }
 
-        Ok(comments_map.entry(name.to_string()).or_insert(Vec::new()))
+        Ok(comments_map.entry(name.to_string()).or_default())
     }
 
     /// Get persons metadata for threaded comments
@@ -4037,11 +4035,9 @@ where
     loop {
         buf.clear();
         match xml.read_event_into(&mut buf) {
-            Ok(Event::Start(e)) if e.local_name().as_ref() == b"r" => {
-                if rich_buffer.is_none() {
-                    // use a buffer since richtext has multiples <r> and <t> for the same cell
-                    rich_buffer = Some(String::new());
-                }
+            Ok(Event::Start(e)) if e.local_name().as_ref() == b"r" && rich_buffer.is_none() => {
+                // use a buffer since richtext has multiples <r> and <t> for the same cell
+                rich_buffer = Some(String::new());
             }
             Ok(Event::Start(e)) if e.local_name().as_ref() == b"rPh" => {
                 is_phonetic_text = true;

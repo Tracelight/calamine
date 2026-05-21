@@ -32,7 +32,7 @@ const EXCEL_1900_1904_DIFF: f64 = 1462.;
 const MS_MULTIPLIER: f64 = 24f64 * 60f64 * 60f64 * 1e+3f64;
 
 /// A struct that combines cell value and style information
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct CellData<'a> {
     /// The cell value
     pub value: Data,
@@ -79,15 +79,6 @@ impl<'a> From<Data> for CellData<'a> {
 impl<'a> From<CellData<'a>> for Data {
     fn from(cell_data: CellData<'a>) -> Self {
         cell_data.value
-    }
-}
-
-impl<'a> Default for CellData<'a> {
-    fn default() -> Self {
-        Self {
-            value: Data::default(),
-            style: None,
-        }
     }
 }
 

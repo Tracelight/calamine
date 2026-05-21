@@ -42,7 +42,7 @@ fn parse_u8_bytes(bytes: &[u8]) -> Option<u8> {
     }
     let mut result: u8 = 0;
     for &b in bytes {
-        if b < b'0' || b > b'9' {
+        if !b.is_ascii_digit() {
             return None;
         }
         result = result.checked_mul(10)?.checked_add(b - b'0')?;
@@ -907,15 +907,15 @@ pub fn parse_border_with_theme<RS: BufRead>(
                     loop {
                         inner_buf.clear();
                         match xml.read_event_into(&mut inner_buf) {
-                            Ok(Event::Start(ref inner_e) | Event::Empty(ref inner_e)) => {
-                                if inner_e.local_name().as_ref() == b"color" {
-                                    if let Some(border_color) = parse_color_with_theme(
-                                        &inner_e.attributes().collect::<Result<Vec<_>, _>>()?,
-                                        theme,
-                                        indexed_colors,
-                                    )? {
-                                        color = Some(border_color);
-                                    }
+                            Ok(Event::Start(ref inner_e) | Event::Empty(ref inner_e))
+                                if inner_e.local_name().as_ref() == b"color" =>
+                            {
+                                if let Some(border_color) = parse_color_with_theme(
+                                    &inner_e.attributes().collect::<Result<Vec<_>, _>>()?,
+                                    theme,
+                                    indexed_colors,
+                                )? {
+                                    color = Some(border_color);
                                 }
                             }
                             Ok(Event::End(ref inner_e))

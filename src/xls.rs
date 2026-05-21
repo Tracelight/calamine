@@ -343,10 +343,8 @@ impl<RS: Read + Seek> Xls<RS> {
                     // 2.4.117 FilePass
                     0x002F if read_u16(r.data) != 0 => return Err(XlsError::Password),
                     // CodePage
-                    0x0042 => {
-                        if self.options.force_codepage.is_none() {
-                            encoding = XlsEncoding::from_codepage(read_u16(r.data))?;
-                        }
+                    0x0042 if self.options.force_codepage.is_none() => {
+                        encoding = XlsEncoding::from_codepage(read_u16(r.data))?;
                     }
                     0x013D => {
                         let sheet_len = r.data.len() / 2;
@@ -354,10 +352,8 @@ impl<RS: Read + Seek> Xls<RS> {
                         self.metadata.sheets.reserve(sheet_len);
                     }
                     // Date1904
-                    0x0022 => {
-                        if read_u16(r.data) == 1 {
-                            self.is_1904 = true;
-                        }
+                    0x0022 if read_u16(r.data) == 1 => {
+                        self.is_1904 = true;
                     }
                     // 2.4.126 FORMATTING
                     0x041E => match parse_format(&mut r, &encoding, biff) {
@@ -745,11 +741,8 @@ fn parse_mul_rk(
         });
     }
 
-    let mut col = col_first as u32;
-
-    for rk in r[4..r.len() - 2].chunks(6) {
+    for (col, rk) in (col_first as u32..).zip(r[4..r.len() - 2].chunks(6)) {
         cells.push(Cell::new((row as u32, col), rk_num(rk, formats, is_1904)));
-        col += 1;
     }
     Ok(())
 }

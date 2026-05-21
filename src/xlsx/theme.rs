@@ -9,15 +9,9 @@ use crate::style::Color;
 
 use super::XlsxError;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct Theme {
     colors: [Option<Color>; 12],
-}
-
-impl Default for Theme {
-    fn default() -> Self {
-        Self { colors: [None; 12] }
-    }
 }
 
 impl Theme {
