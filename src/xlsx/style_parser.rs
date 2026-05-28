@@ -27,7 +27,9 @@ fn parse_hex_digit(b: u8) -> Option<u8> {
 
 #[inline]
 fn parse_hex_byte(bytes: &[u8]) -> Option<u8> {
-    if bytes.len() != 2 { return None; }
+    if bytes.len() != 2 {
+        return None;
+    }
     let hi = parse_hex_digit(bytes[0])?;
     let lo = parse_hex_digit(bytes[1])?;
     Some(hi * 16 + lo)
@@ -35,10 +37,14 @@ fn parse_hex_byte(bytes: &[u8]) -> Option<u8> {
 
 #[inline]
 fn parse_u8_bytes(bytes: &[u8]) -> Option<u8> {
-    if bytes.is_empty() { return None; }
+    if bytes.is_empty() {
+        return None;
+    }
     let mut result: u8 = 0;
     for &b in bytes {
-        if b < b'0' || b > b'9' { return None; }
+        if !b.is_ascii_digit() {
+            return None;
+        }
         result = result.checked_mul(10)?.checked_add(b - b'0')?;
     }
     Some(result)
@@ -70,72 +76,402 @@ pub(crate) fn get_theme_color(theme: u8) -> Color {
 }
 
 const INDEXED_COLORS: [Color; 66] = [
-    Color { alpha: 255, red: 0x00, green: 0x00, blue: 0x00 }, // 0: Black
-    Color { alpha: 255, red: 0xFF, green: 0xFF, blue: 0xFF }, // 1: White
-    Color { alpha: 255, red: 0xFF, green: 0x00, blue: 0x00 }, // 2: Red
-    Color { alpha: 255, red: 0x00, green: 0xFF, blue: 0x00 }, // 3: Green
-    Color { alpha: 255, red: 0x00, green: 0x00, blue: 0xFF }, // 4: Blue
-    Color { alpha: 255, red: 0xFF, green: 0xFF, blue: 0x00 }, // 5: Yellow
-    Color { alpha: 255, red: 0xFF, green: 0x00, blue: 0xFF }, // 6: Magenta
-    Color { alpha: 255, red: 0x00, green: 0xFF, blue: 0xFF }, // 7: Cyan
-    Color { alpha: 255, red: 0x00, green: 0x00, blue: 0x00 }, // 8: Black
-    Color { alpha: 255, red: 0xFF, green: 0xFF, blue: 0xFF }, // 9: White
-    Color { alpha: 255, red: 0xFF, green: 0x00, blue: 0x00 }, // 10: Red
-    Color { alpha: 255, red: 0x00, green: 0xFF, blue: 0x00 }, // 11: Green
-    Color { alpha: 255, red: 0x00, green: 0x00, blue: 0xFF }, // 12: Blue
-    Color { alpha: 255, red: 0xFF, green: 0xFF, blue: 0x00 }, // 13: Yellow
-    Color { alpha: 255, red: 0xFF, green: 0x00, blue: 0xFF }, // 14: Magenta
-    Color { alpha: 255, red: 0x00, green: 0xFF, blue: 0xFF }, // 15: Cyan
-    Color { alpha: 255, red: 0x80, green: 0x00, blue: 0x00 }, // 16: Maroon
-    Color { alpha: 255, red: 0x00, green: 0x80, blue: 0x00 }, // 17: Dark Green
-    Color { alpha: 255, red: 0x00, green: 0x00, blue: 0x80 }, // 18: Dark Blue
-    Color { alpha: 255, red: 0x80, green: 0x80, blue: 0x00 }, // 19: Olive
-    Color { alpha: 255, red: 0x80, green: 0x00, blue: 0x80 }, // 20: Purple
-    Color { alpha: 255, red: 0x00, green: 0x80, blue: 0x80 }, // 21: Teal
-    Color { alpha: 255, red: 0xC0, green: 0xC0, blue: 0xC0 }, // 22: Silver
-    Color { alpha: 255, red: 0x80, green: 0x80, blue: 0x80 }, // 23: Gray
-    Color { alpha: 255, red: 0x99, green: 0x99, blue: 0xFF }, // 24
-    Color { alpha: 255, red: 0x99, green: 0x33, blue: 0x66 }, // 25
-    Color { alpha: 255, red: 0xFF, green: 0xFF, blue: 0xCC }, // 26
-    Color { alpha: 255, red: 0xCC, green: 0xFF, blue: 0xFF }, // 27
-    Color { alpha: 255, red: 0x66, green: 0x00, blue: 0x66 }, // 28
-    Color { alpha: 255, red: 0xFF, green: 0x80, blue: 0x80 }, // 29
-    Color { alpha: 255, red: 0x00, green: 0x66, blue: 0xCC }, // 30
-    Color { alpha: 255, red: 0xCC, green: 0xCC, blue: 0xFF }, // 31
-    Color { alpha: 255, red: 0x00, green: 0x00, blue: 0x80 }, // 32
-    Color { alpha: 255, red: 0xFF, green: 0x00, blue: 0xFF }, // 33
-    Color { alpha: 255, red: 0xFF, green: 0xFF, blue: 0x00 }, // 34
-    Color { alpha: 255, red: 0x00, green: 0xFF, blue: 0xFF }, // 35
-    Color { alpha: 255, red: 0x80, green: 0x00, blue: 0x80 }, // 36
-    Color { alpha: 255, red: 0x80, green: 0x00, blue: 0x00 }, // 37
-    Color { alpha: 255, red: 0x00, green: 0x80, blue: 0x80 }, // 38
-    Color { alpha: 255, red: 0x00, green: 0x00, blue: 0xFF }, // 39
-    Color { alpha: 255, red: 0x00, green: 0xCC, blue: 0xFF }, // 40
-    Color { alpha: 255, red: 0xCC, green: 0xFF, blue: 0xFF }, // 41
-    Color { alpha: 255, red: 0xCC, green: 0xFF, blue: 0xCC }, // 42
-    Color { alpha: 255, red: 0xFF, green: 0xFF, blue: 0x99 }, // 43
-    Color { alpha: 255, red: 0x99, green: 0xCC, blue: 0xFF }, // 44
-    Color { alpha: 255, red: 0xFF, green: 0x99, blue: 0xCC }, // 45
-    Color { alpha: 255, red: 0xCC, green: 0x99, blue: 0xFF }, // 46
-    Color { alpha: 255, red: 0xFF, green: 0xCC, blue: 0x99 }, // 47
-    Color { alpha: 255, red: 0x33, green: 0x66, blue: 0xFF }, // 48
-    Color { alpha: 255, red: 0x33, green: 0xCC, blue: 0xCC }, // 49
-    Color { alpha: 255, red: 0x99, green: 0xCC, blue: 0x00 }, // 50
-    Color { alpha: 255, red: 0xFF, green: 0xCC, blue: 0x00 }, // 51
-    Color { alpha: 255, red: 0xFF, green: 0x99, blue: 0x00 }, // 52
-    Color { alpha: 255, red: 0xFF, green: 0x66, blue: 0x00 }, // 53
-    Color { alpha: 255, red: 0x66, green: 0x66, blue: 0x99 }, // 54
-    Color { alpha: 255, red: 0x96, green: 0x96, blue: 0x96 }, // 55
-    Color { alpha: 255, red: 0x00, green: 0x33, blue: 0x66 }, // 56
-    Color { alpha: 255, red: 0x33, green: 0x99, blue: 0x66 }, // 57
-    Color { alpha: 255, red: 0x00, green: 0x33, blue: 0x00 }, // 58
-    Color { alpha: 255, red: 0x33, green: 0x33, blue: 0x00 }, // 59
-    Color { alpha: 255, red: 0x99, green: 0x33, blue: 0x00 }, // 60
-    Color { alpha: 255, red: 0x99, green: 0x33, blue: 0x66 }, // 61
-    Color { alpha: 255, red: 0x33, green: 0x33, blue: 0x99 }, // 62
-    Color { alpha: 255, red: 0x33, green: 0x33, blue: 0x33 }, // 63
-    Color { alpha: 255, red: 0x00, green: 0x00, blue: 0x00 }, // 64: System Foreground
-    Color { alpha: 255, red: 0xFF, green: 0xFF, blue: 0xFF }, // 65: System Background
+    Color {
+        alpha: 255,
+        red: 0x00,
+        green: 0x00,
+        blue: 0x00,
+    }, // 0: Black
+    Color {
+        alpha: 255,
+        red: 0xFF,
+        green: 0xFF,
+        blue: 0xFF,
+    }, // 1: White
+    Color {
+        alpha: 255,
+        red: 0xFF,
+        green: 0x00,
+        blue: 0x00,
+    }, // 2: Red
+    Color {
+        alpha: 255,
+        red: 0x00,
+        green: 0xFF,
+        blue: 0x00,
+    }, // 3: Green
+    Color {
+        alpha: 255,
+        red: 0x00,
+        green: 0x00,
+        blue: 0xFF,
+    }, // 4: Blue
+    Color {
+        alpha: 255,
+        red: 0xFF,
+        green: 0xFF,
+        blue: 0x00,
+    }, // 5: Yellow
+    Color {
+        alpha: 255,
+        red: 0xFF,
+        green: 0x00,
+        blue: 0xFF,
+    }, // 6: Magenta
+    Color {
+        alpha: 255,
+        red: 0x00,
+        green: 0xFF,
+        blue: 0xFF,
+    }, // 7: Cyan
+    Color {
+        alpha: 255,
+        red: 0x00,
+        green: 0x00,
+        blue: 0x00,
+    }, // 8: Black
+    Color {
+        alpha: 255,
+        red: 0xFF,
+        green: 0xFF,
+        blue: 0xFF,
+    }, // 9: White
+    Color {
+        alpha: 255,
+        red: 0xFF,
+        green: 0x00,
+        blue: 0x00,
+    }, // 10: Red
+    Color {
+        alpha: 255,
+        red: 0x00,
+        green: 0xFF,
+        blue: 0x00,
+    }, // 11: Green
+    Color {
+        alpha: 255,
+        red: 0x00,
+        green: 0x00,
+        blue: 0xFF,
+    }, // 12: Blue
+    Color {
+        alpha: 255,
+        red: 0xFF,
+        green: 0xFF,
+        blue: 0x00,
+    }, // 13: Yellow
+    Color {
+        alpha: 255,
+        red: 0xFF,
+        green: 0x00,
+        blue: 0xFF,
+    }, // 14: Magenta
+    Color {
+        alpha: 255,
+        red: 0x00,
+        green: 0xFF,
+        blue: 0xFF,
+    }, // 15: Cyan
+    Color {
+        alpha: 255,
+        red: 0x80,
+        green: 0x00,
+        blue: 0x00,
+    }, // 16: Maroon
+    Color {
+        alpha: 255,
+        red: 0x00,
+        green: 0x80,
+        blue: 0x00,
+    }, // 17: Dark Green
+    Color {
+        alpha: 255,
+        red: 0x00,
+        green: 0x00,
+        blue: 0x80,
+    }, // 18: Dark Blue
+    Color {
+        alpha: 255,
+        red: 0x80,
+        green: 0x80,
+        blue: 0x00,
+    }, // 19: Olive
+    Color {
+        alpha: 255,
+        red: 0x80,
+        green: 0x00,
+        blue: 0x80,
+    }, // 20: Purple
+    Color {
+        alpha: 255,
+        red: 0x00,
+        green: 0x80,
+        blue: 0x80,
+    }, // 21: Teal
+    Color {
+        alpha: 255,
+        red: 0xC0,
+        green: 0xC0,
+        blue: 0xC0,
+    }, // 22: Silver
+    Color {
+        alpha: 255,
+        red: 0x80,
+        green: 0x80,
+        blue: 0x80,
+    }, // 23: Gray
+    Color {
+        alpha: 255,
+        red: 0x99,
+        green: 0x99,
+        blue: 0xFF,
+    }, // 24
+    Color {
+        alpha: 255,
+        red: 0x99,
+        green: 0x33,
+        blue: 0x66,
+    }, // 25
+    Color {
+        alpha: 255,
+        red: 0xFF,
+        green: 0xFF,
+        blue: 0xCC,
+    }, // 26
+    Color {
+        alpha: 255,
+        red: 0xCC,
+        green: 0xFF,
+        blue: 0xFF,
+    }, // 27
+    Color {
+        alpha: 255,
+        red: 0x66,
+        green: 0x00,
+        blue: 0x66,
+    }, // 28
+    Color {
+        alpha: 255,
+        red: 0xFF,
+        green: 0x80,
+        blue: 0x80,
+    }, // 29
+    Color {
+        alpha: 255,
+        red: 0x00,
+        green: 0x66,
+        blue: 0xCC,
+    }, // 30
+    Color {
+        alpha: 255,
+        red: 0xCC,
+        green: 0xCC,
+        blue: 0xFF,
+    }, // 31
+    Color {
+        alpha: 255,
+        red: 0x00,
+        green: 0x00,
+        blue: 0x80,
+    }, // 32
+    Color {
+        alpha: 255,
+        red: 0xFF,
+        green: 0x00,
+        blue: 0xFF,
+    }, // 33
+    Color {
+        alpha: 255,
+        red: 0xFF,
+        green: 0xFF,
+        blue: 0x00,
+    }, // 34
+    Color {
+        alpha: 255,
+        red: 0x00,
+        green: 0xFF,
+        blue: 0xFF,
+    }, // 35
+    Color {
+        alpha: 255,
+        red: 0x80,
+        green: 0x00,
+        blue: 0x80,
+    }, // 36
+    Color {
+        alpha: 255,
+        red: 0x80,
+        green: 0x00,
+        blue: 0x00,
+    }, // 37
+    Color {
+        alpha: 255,
+        red: 0x00,
+        green: 0x80,
+        blue: 0x80,
+    }, // 38
+    Color {
+        alpha: 255,
+        red: 0x00,
+        green: 0x00,
+        blue: 0xFF,
+    }, // 39
+    Color {
+        alpha: 255,
+        red: 0x00,
+        green: 0xCC,
+        blue: 0xFF,
+    }, // 40
+    Color {
+        alpha: 255,
+        red: 0xCC,
+        green: 0xFF,
+        blue: 0xFF,
+    }, // 41
+    Color {
+        alpha: 255,
+        red: 0xCC,
+        green: 0xFF,
+        blue: 0xCC,
+    }, // 42
+    Color {
+        alpha: 255,
+        red: 0xFF,
+        green: 0xFF,
+        blue: 0x99,
+    }, // 43
+    Color {
+        alpha: 255,
+        red: 0x99,
+        green: 0xCC,
+        blue: 0xFF,
+    }, // 44
+    Color {
+        alpha: 255,
+        red: 0xFF,
+        green: 0x99,
+        blue: 0xCC,
+    }, // 45
+    Color {
+        alpha: 255,
+        red: 0xCC,
+        green: 0x99,
+        blue: 0xFF,
+    }, // 46
+    Color {
+        alpha: 255,
+        red: 0xFF,
+        green: 0xCC,
+        blue: 0x99,
+    }, // 47
+    Color {
+        alpha: 255,
+        red: 0x33,
+        green: 0x66,
+        blue: 0xFF,
+    }, // 48
+    Color {
+        alpha: 255,
+        red: 0x33,
+        green: 0xCC,
+        blue: 0xCC,
+    }, // 49
+    Color {
+        alpha: 255,
+        red: 0x99,
+        green: 0xCC,
+        blue: 0x00,
+    }, // 50
+    Color {
+        alpha: 255,
+        red: 0xFF,
+        green: 0xCC,
+        blue: 0x00,
+    }, // 51
+    Color {
+        alpha: 255,
+        red: 0xFF,
+        green: 0x99,
+        blue: 0x00,
+    }, // 52
+    Color {
+        alpha: 255,
+        red: 0xFF,
+        green: 0x66,
+        blue: 0x00,
+    }, // 53
+    Color {
+        alpha: 255,
+        red: 0x66,
+        green: 0x66,
+        blue: 0x99,
+    }, // 54
+    Color {
+        alpha: 255,
+        red: 0x96,
+        green: 0x96,
+        blue: 0x96,
+    }, // 55
+    Color {
+        alpha: 255,
+        red: 0x00,
+        green: 0x33,
+        blue: 0x66,
+    }, // 56
+    Color {
+        alpha: 255,
+        red: 0x33,
+        green: 0x99,
+        blue: 0x66,
+    }, // 57
+    Color {
+        alpha: 255,
+        red: 0x00,
+        green: 0x33,
+        blue: 0x00,
+    }, // 58
+    Color {
+        alpha: 255,
+        red: 0x33,
+        green: 0x33,
+        blue: 0x00,
+    }, // 59
+    Color {
+        alpha: 255,
+        red: 0x99,
+        green: 0x33,
+        blue: 0x00,
+    }, // 60
+    Color {
+        alpha: 255,
+        red: 0x99,
+        green: 0x33,
+        blue: 0x66,
+    }, // 61
+    Color {
+        alpha: 255,
+        red: 0x33,
+        green: 0x33,
+        blue: 0x99,
+    }, // 62
+    Color {
+        alpha: 255,
+        red: 0x33,
+        green: 0x33,
+        blue: 0x33,
+    }, // 63
+    Color {
+        alpha: 255,
+        red: 0x00,
+        green: 0x00,
+        blue: 0x00,
+    }, // 64: System Foreground
+    Color {
+        alpha: 255,
+        red: 0xFF,
+        green: 0xFF,
+        blue: 0xFF,
+    }, // 65: System Background
 ];
 
 fn get_indexed_color(index: u8, custom: Option<&[Color]>) -> Color {
@@ -144,7 +480,10 @@ fn get_indexed_color(index: u8, custom: Option<&[Color]>) -> Color {
             return color;
         }
     }
-    INDEXED_COLORS.get(index as usize).copied().unwrap_or(Color::rgb(0, 0, 0))
+    INDEXED_COLORS
+        .get(index as usize)
+        .copied()
+        .unwrap_or(Color::rgb(0, 0, 0))
 }
 
 /// Result of parsing a color: (color, from_theme)
@@ -170,7 +509,11 @@ fn parse_color_with_source(
     }
 
     if let Some(bytes) = rgb_bytes {
-        let bytes = if bytes.first() == Some(&b'#') { &bytes[1..] } else { bytes };
+        let bytes = if bytes.first() == Some(&b'#') {
+            &bytes[1..]
+        } else {
+            bytes
+        };
         if bytes.len() == 8 {
             if let (Some(a), Some(r), Some(g), Some(b)) = (
                 parse_hex_byte(&bytes[0..2]),
@@ -179,7 +522,14 @@ fn parse_color_with_source(
                 parse_hex_byte(&bytes[6..8]),
             ) {
                 let color = Color::new(a, r, g, b);
-                return Ok(Some((if tint != 0.0 { color.with_tint(tint) } else { color }, false)));
+                return Ok(Some((
+                    if tint != 0.0 {
+                        color.with_tint(tint)
+                    } else {
+                        color
+                    },
+                    false,
+                )));
             }
         } else if bytes.len() == 6 {
             if let (Some(r), Some(g), Some(b)) = (
@@ -188,23 +538,46 @@ fn parse_color_with_source(
                 parse_hex_byte(&bytes[4..6]),
             ) {
                 let color = Color::rgb(r, g, b);
-                return Ok(Some((if tint != 0.0 { color.with_tint(tint) } else { color }, false)));
+                return Ok(Some((
+                    if tint != 0.0 {
+                        color.with_tint(tint)
+                    } else {
+                        color
+                    },
+                    false,
+                )));
             }
         }
     }
 
     if let Some(idx) = theme_idx {
         let color = if let Some(theme) = theme_data {
-            theme.color(idx as usize).unwrap_or_else(|| get_theme_color(idx))
+            theme
+                .color(idx as usize)
+                .unwrap_or_else(|| get_theme_color(idx))
         } else {
             get_theme_color(idx)
         };
-        return Ok(Some((if tint != 0.0 { color.with_tint(tint) } else { color }, true)));
+        return Ok(Some((
+            if tint != 0.0 {
+                color.with_tint(tint)
+            } else {
+                color
+            },
+            true,
+        )));
     }
 
     if let Some(idx) = indexed {
         let color = get_indexed_color(idx, indexed_colors);
-        return Ok(Some((if tint != 0.0 { color.with_tint(tint) } else { color }, false)));
+        return Ok(Some((
+            if tint != 0.0 {
+                color.with_tint(tint)
+            } else {
+                color
+            },
+            false,
+        )));
     }
 
     Ok(None)
@@ -420,9 +793,11 @@ pub fn parse_font_with_theme<RS: BufRead>(
                     font = font.with_strikethrough(true);
                 }
                 b"color" => {
-                    if let Some((color, from_theme)) =
-                        parse_color_with_source(&e.attributes().collect::<Result<Vec<_>, _>>()?, theme, indexed_colors)?
-                    {
+                    if let Some((color, from_theme)) = parse_color_with_source(
+                        &e.attributes().collect::<Result<Vec<_>, _>>()?,
+                        theme,
+                        indexed_colors,
+                    )? {
                         font = font.with_color_and_source(color, from_theme);
                     }
                 }
@@ -466,16 +841,20 @@ pub fn parse_fill_with_theme<RS: BufRead>(
                     }
                 }
                 b"fgColor" => {
-                    if let Some(color) =
-                        parse_color_with_theme(&e.attributes().collect::<Result<Vec<_>, _>>()?, theme, indexed_colors)?
-                    {
+                    if let Some(color) = parse_color_with_theme(
+                        &e.attributes().collect::<Result<Vec<_>, _>>()?,
+                        theme,
+                        indexed_colors,
+                    )? {
                         fill = fill.with_foreground_color(color);
                     }
                 }
                 b"bgColor" => {
-                    if let Some(color) =
-                        parse_color_with_theme(&e.attributes().collect::<Result<Vec<_>, _>>()?, theme, indexed_colors)?
-                    {
+                    if let Some(color) = parse_color_with_theme(
+                        &e.attributes().collect::<Result<Vec<_>, _>>()?,
+                        theme,
+                        indexed_colors,
+                    )? {
                         fill = fill.with_background_color(color);
                     }
                 }
@@ -503,126 +882,126 @@ pub fn parse_border_with_theme<RS: BufRead>(
     loop {
         buf.clear();
         match xml.read_event_into(&mut buf) {
-            Ok(Event::Start(ref e)) => {
-                match e.local_name().as_ref() {
-                    b"left" | b"right" | b"top" | b"bottom" | b"diagonal" => {
-                        let mut style = BorderStyle::None;
-                        let mut color = None;
+            Ok(Event::Start(ref e)) => match e.local_name().as_ref() {
+                b"left" | b"right" | b"top" | b"bottom" | b"diagonal" => {
+                    let mut style = BorderStyle::None;
+                    let mut color = None;
 
-                        for attr in e.attributes() {
-                            let attr = attr?;
-                            if attr.key.as_ref() == b"style" {
-                                let style_str = String::from_utf8_lossy(&attr.value);
-                                style = parse_border_style(&style_str);
-                            }
+                    for attr in e.attributes() {
+                        let attr = attr?;
+                        if attr.key.as_ref() == b"style" {
+                            let style_str = String::from_utf8_lossy(&attr.value);
+                            style = parse_border_style(&style_str);
                         }
+                    }
 
-                        if let Some(border_color) =
-                            parse_color_with_theme(&e.attributes().collect::<Result<Vec<_>, _>>()?, theme, indexed_colors)?
-                        {
-                            color = Some(border_color);
-                        }
+                    if let Some(border_color) = parse_color_with_theme(
+                        &e.attributes().collect::<Result<Vec<_>, _>>()?,
+                        theme,
+                        indexed_colors,
+                    )? {
+                        color = Some(border_color);
+                    }
 
-                        let mut inner_buf = Vec::new();
-                        loop {
-                            inner_buf.clear();
-                            match xml.read_event_into(&mut inner_buf) {
-                                Ok(Event::Start(ref inner_e) | Event::Empty(ref inner_e)) => {
-                                    if inner_e.local_name().as_ref() == b"color" {
-                                        if let Some(border_color) = parse_color_with_theme(
-                                            &inner_e.attributes().collect::<Result<Vec<_>, _>>()?,
-                                            theme,
-                                            indexed_colors,
-                                        )? {
-                                            color = Some(border_color);
-                                        }
-                                    }
-                                }
-                                Ok(Event::End(ref inner_e))
-                                    if inner_e.local_name().as_ref() == e.local_name().as_ref() =>
-                                {
-                                    break
-                                }
-                                Ok(Event::Eof) => return Err(XlsxError::XmlEof("border side")),
-                                Err(e) => return Err(XlsxError::Xml(e)),
-                                _ => {}
-                            }
-                        }
-
-                        let border = if let Some(c) = color {
-                            Border::with_color(style, c)
-                        } else {
-                            Border::new(style)
-                        };
-
-                        match e.local_name().as_ref() {
-                            b"left" => borders.left = border,
-                            b"right" => borders.right = border,
-                            b"top" => borders.top = border,
-                            b"bottom" => borders.bottom = border,
-                            b"diagonal" => {
-                                for attr in e.attributes() {
-                                    let attr = attr?;
-                                    if attr.key.as_ref() == b"diagonalDown" {
-                                        borders.diagonal_down = border.clone();
-                                    } else if attr.key.as_ref() == b"diagonalUp" {
-                                        borders.diagonal_up = border.clone();
-                                    }
+                    let mut inner_buf = Vec::new();
+                    loop {
+                        inner_buf.clear();
+                        match xml.read_event_into(&mut inner_buf) {
+                            Ok(Event::Start(ref inner_e) | Event::Empty(ref inner_e))
+                                if inner_e.local_name().as_ref() == b"color" =>
+                            {
+                                if let Some(border_color) = parse_color_with_theme(
+                                    &inner_e.attributes().collect::<Result<Vec<_>, _>>()?,
+                                    theme,
+                                    indexed_colors,
+                                )? {
+                                    color = Some(border_color);
                                 }
                             }
+                            Ok(Event::End(ref inner_e))
+                                if inner_e.local_name().as_ref() == e.local_name().as_ref() =>
+                            {
+                                break
+                            }
+                            Ok(Event::Eof) => return Err(XlsxError::XmlEof("border side")),
+                            Err(e) => return Err(XlsxError::Xml(e)),
                             _ => {}
                         }
                     }
-                    _ => {}
-                }
-            }
-            Ok(Event::Empty(ref e)) => {
-                match e.local_name().as_ref() {
-                    b"left" | b"right" | b"top" | b"bottom" | b"diagonal" => {
-                        let mut style = BorderStyle::None;
-                        let mut color = None;
 
-                        for attr in e.attributes() {
-                            let attr = attr?;
-                            if attr.key.as_ref() == b"style" {
-                                let style_str = String::from_utf8_lossy(&attr.value);
-                                style = parse_border_style(&style_str);
-                            }
-                        }
+                    let border = if let Some(c) = color {
+                        Border::with_color(style, c)
+                    } else {
+                        Border::new(style)
+                    };
 
-                        if let Some(border_color) =
-                            parse_color_with_theme(&e.attributes().collect::<Result<Vec<_>, _>>()?, theme, indexed_colors)?
-                        {
-                            color = Some(border_color);
-                        }
-
-                        let border = if let Some(c) = color {
-                            Border::with_color(style, c)
-                        } else {
-                            Border::new(style)
-                        };
-
-                        match e.local_name().as_ref() {
-                            b"left" => borders.left = border,
-                            b"right" => borders.right = border,
-                            b"top" => borders.top = border,
-                            b"bottom" => borders.bottom = border,
-                            b"diagonal" => {
-                                for attr in e.attributes() {
-                                    let attr = attr?;
-                                    if attr.key.as_ref() == b"diagonalDown" {
-                                        borders.diagonal_down = border.clone();
-                                    } else if attr.key.as_ref() == b"diagonalUp" {
-                                        borders.diagonal_up = border.clone();
-                                    }
+                    match e.local_name().as_ref() {
+                        b"left" => borders.left = border,
+                        b"right" => borders.right = border,
+                        b"top" => borders.top = border,
+                        b"bottom" => borders.bottom = border,
+                        b"diagonal" => {
+                            for attr in e.attributes() {
+                                let attr = attr?;
+                                if attr.key.as_ref() == b"diagonalDown" {
+                                    borders.diagonal_down = border.clone();
+                                } else if attr.key.as_ref() == b"diagonalUp" {
+                                    borders.diagonal_up = border.clone();
                                 }
                             }
-                            _ => {}
+                        }
+                        _ => {}
+                    }
+                }
+                _ => {}
+            },
+            Ok(Event::Empty(ref e)) => match e.local_name().as_ref() {
+                b"left" | b"right" | b"top" | b"bottom" | b"diagonal" => {
+                    let mut style = BorderStyle::None;
+                    let mut color = None;
+
+                    for attr in e.attributes() {
+                        let attr = attr?;
+                        if attr.key.as_ref() == b"style" {
+                            let style_str = String::from_utf8_lossy(&attr.value);
+                            style = parse_border_style(&style_str);
                         }
                     }
-                    _ => {}
+
+                    if let Some(border_color) = parse_color_with_theme(
+                        &e.attributes().collect::<Result<Vec<_>, _>>()?,
+                        theme,
+                        indexed_colors,
+                    )? {
+                        color = Some(border_color);
+                    }
+
+                    let border = if let Some(c) = color {
+                        Border::with_color(style, c)
+                    } else {
+                        Border::new(style)
+                    };
+
+                    match e.local_name().as_ref() {
+                        b"left" => borders.left = border,
+                        b"right" => borders.right = border,
+                        b"top" => borders.top = border,
+                        b"bottom" => borders.bottom = border,
+                        b"diagonal" => {
+                            for attr in e.attributes() {
+                                let attr = attr?;
+                                if attr.key.as_ref() == b"diagonalDown" {
+                                    borders.diagonal_down = border.clone();
+                                } else if attr.key.as_ref() == b"diagonalUp" {
+                                    borders.diagonal_up = border.clone();
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
                 }
-            }
+                _ => {}
+            },
             Ok(Event::End(ref e)) if e.local_name().as_ref() == b"border" => break,
             Ok(Event::Eof) => return Err(XlsxError::XmlEof("border")),
             Err(e) => return Err(XlsxError::Xml(e)),

@@ -9,8 +9,8 @@ mod comments;
 mod style_parser;
 mod theme;
 
-pub use theme::Theme;
 use theme::parse_theme;
+pub use theme::Theme;
 
 use std::borrow::Cow;
 use std::collections::BTreeMap;
@@ -38,7 +38,7 @@ use crate::{
     Cell, CellErrorType, Data, Dimensions, HeaderRow, Metadata, Range, Reader, ReaderRef, Sheet,
     SheetType, SheetVisible, Style, Table,
 };
-pub use cells_reader::XlsxCellReader;
+pub use cells_reader::{WorksheetItem, XlsxCellReader, XlsxWorksheetItemReader};
 pub use comments::{
     Comment, LegacyCommentsMap, Person, PersonsMap, RichTextRun, ThreadedComment,
     ThreadedCommentsMap,
@@ -64,41 +64,42 @@ fn parse_hex_digit(b: u8) -> Option<u8> {
 
 #[inline]
 fn parse_hex_byte(bytes: &[u8]) -> Option<u8> {
-    if bytes.len() != 2 { return None; }
+    if bytes.len() != 2 {
+        return None;
+    }
     let hi = parse_hex_digit(bytes[0])?;
     let lo = parse_hex_digit(bytes[1])?;
     Some(hi * 16 + lo)
 }
 
-fn parse_color_from_attrs(
-    attributes: &Attributes,
-    theme: Option<&Theme>,
-) -> Option<Color> {
+fn parse_color_from_attrs(attributes: &Attributes, theme: Option<&Theme>) -> Option<Color> {
     let mut rgb_bytes: Option<Cow<'_, [u8]>> = None;
     let mut theme_idx: Option<u8> = None;
     let mut tint: f64 = 0.0;
 
-    for attr in attributes.clone() {
-        if let Ok(attr) = attr {
-            match attr.key.as_ref() {
-                b"rgb" => rgb_bytes = Some(attr.value),
-                b"theme" => {
-                    if let Ok(s) = std::str::from_utf8(&attr.value) {
-                        theme_idx = s.parse().ok();
-                    }
+    for attr in attributes.clone().flatten() {
+        match attr.key.as_ref() {
+            b"rgb" => rgb_bytes = Some(attr.value),
+            b"theme" => {
+                if let Ok(s) = std::str::from_utf8(&attr.value) {
+                    theme_idx = s.parse().ok();
                 }
-                b"tint" => {
-                    if let Ok(s) = std::str::from_utf8(&attr.value) {
-                        tint = s.parse().unwrap_or(0.0);
-                    }
-                }
-                _ => {}
             }
+            b"tint" => {
+                if let Ok(s) = std::str::from_utf8(&attr.value) {
+                    tint = s.parse().unwrap_or(0.0);
+                }
+            }
+            _ => {}
         }
     }
 
     if let Some(bytes) = rgb_bytes {
-        let bytes_slice: &[u8] = if bytes.first() == Some(&b'#') { &bytes[1..] } else { &bytes };
+        let bytes_slice: &[u8] = if bytes.first() == Some(&b'#') {
+            &bytes[1..]
+        } else {
+            &bytes
+        };
         if bytes_slice.len() == 8 {
             if let (Some(a), Some(r), Some(g), Some(b)) = (
                 parse_hex_byte(&bytes_slice[0..2]),
@@ -107,7 +108,11 @@ fn parse_color_from_attrs(
                 parse_hex_byte(&bytes_slice[6..8]),
             ) {
                 let color = Color::new(a, r, g, b);
-                return Some(if tint != 0.0 { color.with_tint(tint) } else { color });
+                return Some(if tint != 0.0 {
+                    color.with_tint(tint)
+                } else {
+                    color
+                });
             }
         } else if bytes_slice.len() == 6 {
             if let (Some(r), Some(g), Some(b)) = (
@@ -116,7 +121,11 @@ fn parse_color_from_attrs(
                 parse_hex_byte(&bytes_slice[4..6]),
             ) {
                 let color = Color::rgb(r, g, b);
-                return Some(if tint != 0.0 { color.with_tint(tint) } else { color });
+                return Some(if tint != 0.0 {
+                    color.with_tint(tint)
+                } else {
+                    color
+                });
             }
         }
     }
@@ -124,7 +133,11 @@ fn parse_color_from_attrs(
     if let Some(idx) = theme_idx {
         if let Some(theme_data) = theme {
             if let Some(color) = theme_data.color(idx as usize) {
-                return Some(if tint != 0.0 { color.with_tint(tint) } else { color });
+                return Some(if tint != 0.0 {
+                    color.with_tint(tint)
+                } else {
+                    color
+                });
             }
         }
     }
@@ -473,68 +486,69 @@ impl<RS: Read + Seek> Xlsx<RS> {
         loop {
             buf.clear();
             match xml.read_event_into(&mut buf) {
-                Ok(Event::Start(e)) if e.local_name().as_ref() == b"colors" => {
-                    loop {
-                        inner_buf.clear();
-                        match xml.read_event_into(&mut inner_buf) {
-                            Ok(Event::Start(e)) if e.local_name().as_ref() == b"indexedColors" => {
-                                let mut colors = Vec::with_capacity(64);
-                                let mut color_buf = Vec::with_capacity(64);
-                                loop {
-                                    color_buf.clear();
-                                    match xml.read_event_into(&mut color_buf) {
-                                        Ok(Event::Start(e) | Event::Empty(e))
-                                            if e.local_name().as_ref() == b"rgbColor" =>
-                                        {
-                                            let mut color = Color::rgb(0, 0, 0);
-                                            for a in e.attributes() {
-                                                if let Ok(Attribute {
-                                                    key: QName(b"rgb"),
-                                                    value,
-                                                }) = a
+                Ok(Event::Start(e)) if e.local_name().as_ref() == b"colors" => loop {
+                    inner_buf.clear();
+                    match xml.read_event_into(&mut inner_buf) {
+                        Ok(Event::Start(e)) if e.local_name().as_ref() == b"indexedColors" => {
+                            let mut colors = Vec::with_capacity(64);
+                            let mut color_buf = Vec::with_capacity(64);
+                            loop {
+                                color_buf.clear();
+                                match xml.read_event_into(&mut color_buf) {
+                                    Ok(Event::Start(e) | Event::Empty(e))
+                                        if e.local_name().as_ref() == b"rgbColor" =>
+                                    {
+                                        let mut color = Color::rgb(0, 0, 0);
+                                        for a in e.attributes() {
+                                            if let Ok(Attribute {
+                                                key: QName(b"rgb"),
+                                                value,
+                                            }) = a
+                                            {
+                                                let bytes = value.as_ref();
+                                                let bytes = if bytes.len() >= 2
+                                                    && bytes[0] == b'0'
+                                                    && bytes[1] == b'0'
                                                 {
-                                                    let bytes = value.as_ref();
-                                                    let bytes = if bytes.len() >= 2 && bytes[0] == b'0' && bytes[1] == b'0' {
-                                                        &bytes[2..]
-                                                    } else {
-                                                        bytes
-                                                    };
-                                                    if bytes.len() >= 6 {
-                                                        if let (Some(r), Some(g), Some(b)) = (
-                                                            parse_hex_byte(&bytes[0..2]),
-                                                            parse_hex_byte(&bytes[2..4]),
-                                                            parse_hex_byte(&bytes[4..6]),
-                                                        ) {
-                                                            color = Color::rgb(r, g, b);
-                                                        }
+                                                    &bytes[2..]
+                                                } else {
+                                                    bytes
+                                                };
+                                                if bytes.len() >= 6 {
+                                                    if let (Some(r), Some(g), Some(b)) = (
+                                                        parse_hex_byte(&bytes[0..2]),
+                                                        parse_hex_byte(&bytes[2..4]),
+                                                        parse_hex_byte(&bytes[4..6]),
+                                                    ) {
+                                                        color = Color::rgb(r, g, b);
                                                     }
                                                 }
                                             }
-                                            colors.push(color);
                                         }
-                                        Ok(Event::End(e))
-                                            if e.local_name().as_ref() == b"indexedColors" =>
-                                        {
-                                            break
-                                        }
-                                        Ok(Event::Eof) => {
-                                            return Err(XlsxError::XmlEof("indexedColors"))
-                                        }
-                                        Err(e) => return Err(XlsxError::Xml(e)),
-                                        _ => (),
+                                        colors.push(color);
                                     }
-                                }
-                                if !colors.is_empty() {
-                                    self.indexed_colors = Some(colors);
+                                    Ok(Event::End(e))
+                                        if e.local_name().as_ref() == b"indexedColors" =>
+                                    {
+                                        break
+                                    }
+                                    Ok(Event::Eof) => {
+                                        return Err(XlsxError::XmlEof("indexedColors"))
+                                    }
+                                    Err(e) => return Err(XlsxError::Xml(e)),
+                                    _ => (),
                                 }
                             }
-                            Ok(Event::End(e)) if e.local_name().as_ref() == b"colors" => break,
-                            Ok(Event::Eof) => return Err(XlsxError::XmlEof("colors")),
-                            Err(e) => return Err(XlsxError::Xml(e)),
-                            _ => (),
+                            if !colors.is_empty() {
+                                self.indexed_colors = Some(colors);
+                            }
                         }
+                        Ok(Event::End(e)) if e.local_name().as_ref() == b"colors" => break,
+                        Ok(Event::Eof) => return Err(XlsxError::XmlEof("colors")),
+                        Err(e) => return Err(XlsxError::Xml(e)),
+                        _ => (),
                     }
-                }
+                },
                 Ok(Event::End(e)) if e.local_name().as_ref() == b"styleSheet" => break,
                 Ok(Event::Eof) => break,
                 Err(e) => return Err(XlsxError::Xml(e)),
@@ -617,7 +631,12 @@ impl<RS: Read + Seek> Xlsx<RS> {
                     inner_buf.clear();
                     match xml.read_event_into(&mut inner_buf) {
                         Ok(Event::Start(e)) if e.local_name().as_ref() == b"font" => {
-                            let font = style_parser::parse_font_with_theme(&mut xml, &e, self.theme.as_ref(), self.indexed_colors.as_deref())?;
+                            let font = style_parser::parse_font_with_theme(
+                                &mut xml,
+                                &e,
+                                self.theme.as_ref(),
+                                self.indexed_colors.as_deref(),
+                            )?;
                             fonts.push(font);
                         }
                         Ok(Event::End(e)) if e.local_name().as_ref() == b"fonts" => break,
@@ -630,7 +649,12 @@ impl<RS: Read + Seek> Xlsx<RS> {
                     inner_buf.clear();
                     match xml.read_event_into(&mut inner_buf) {
                         Ok(Event::Start(e)) if e.local_name().as_ref() == b"fill" => {
-                            let fill = style_parser::parse_fill_with_theme(&mut xml, &e, self.theme.as_ref(), self.indexed_colors.as_deref())?;
+                            let fill = style_parser::parse_fill_with_theme(
+                                &mut xml,
+                                &e,
+                                self.theme.as_ref(),
+                                self.indexed_colors.as_deref(),
+                            )?;
                             fills.push(fill);
                         }
                         Ok(Event::End(e)) if e.local_name().as_ref() == b"fills" => break,
@@ -643,7 +667,12 @@ impl<RS: Read + Seek> Xlsx<RS> {
                     inner_buf.clear();
                     match xml.read_event_into(&mut inner_buf) {
                         Ok(Event::Start(e)) if e.local_name().as_ref() == b"border" => {
-                            let border = style_parser::parse_border_with_theme(&mut xml, &e, self.theme.as_ref(), self.indexed_colors.as_deref())?;
+                            let border = style_parser::parse_border_with_theme(
+                                &mut xml,
+                                &e,
+                                self.theme.as_ref(),
+                                self.indexed_colors.as_deref(),
+                            )?;
                             borders.push(border);
                         }
                         Ok(Event::End(e)) if e.local_name().as_ref() == b"borders" => break,
@@ -664,21 +693,33 @@ impl<RS: Read + Seek> Xlsx<RS> {
                             for a in e.attributes() {
                                 let a = a.map_err(XlsxError::XmlAttr)?;
                                 match a.key.as_ref() {
-                                    b"fontId" => { font_id = xml.decoder().decode(&a.value)?.parse().ok(); }
-                                    b"fillId" => { fill_id = xml.decoder().decode(&a.value)?.parse().ok(); }
-                                    b"borderId" => { border_id = xml.decoder().decode(&a.value)?.parse().ok(); }
+                                    b"fontId" => {
+                                        font_id = xml.decoder().decode(&a.value)?.parse().ok();
+                                    }
+                                    b"fillId" => {
+                                        fill_id = xml.decoder().decode(&a.value)?.parse().ok();
+                                    }
+                                    b"borderId" => {
+                                        border_id = xml.decoder().decode(&a.value)?.parse().ok();
+                                    }
                                     _ => {}
                                 }
                             }
 
                             if let Some(id) = font_id {
-                                if let Some(font) = fonts.get(id) { style = style.with_font(font.clone()); }
+                                if let Some(font) = fonts.get(id) {
+                                    style = style.with_font(font.clone());
+                                }
                             }
                             if let Some(id) = fill_id {
-                                if let Some(fill) = fills.get(id) { style = style.with_fill(fill.clone()); }
+                                if let Some(fill) = fills.get(id) {
+                                    style = style.with_fill(fill.clone());
+                                }
                             }
                             if let Some(id) = border_id {
-                                if let Some(border) = borders.get(id) { style = style.with_borders(border.clone()); }
+                                if let Some(border) = borders.get(id) {
+                                    style = style.with_borders(border.clone());
+                                }
                             }
 
                             xml.read_to_end_into(e.name(), &mut Vec::new())?;
@@ -693,21 +734,33 @@ impl<RS: Read + Seek> Xlsx<RS> {
                             for a in e.attributes() {
                                 let a = a.map_err(XlsxError::XmlAttr)?;
                                 match a.key.as_ref() {
-                                    b"fontId" => { font_id = xml.decoder().decode(&a.value)?.parse().ok(); }
-                                    b"fillId" => { fill_id = xml.decoder().decode(&a.value)?.parse().ok(); }
-                                    b"borderId" => { border_id = xml.decoder().decode(&a.value)?.parse().ok(); }
+                                    b"fontId" => {
+                                        font_id = xml.decoder().decode(&a.value)?.parse().ok();
+                                    }
+                                    b"fillId" => {
+                                        fill_id = xml.decoder().decode(&a.value)?.parse().ok();
+                                    }
+                                    b"borderId" => {
+                                        border_id = xml.decoder().decode(&a.value)?.parse().ok();
+                                    }
                                     _ => {}
                                 }
                             }
 
                             if let Some(id) = font_id {
-                                if let Some(font) = fonts.get(id) { style = style.with_font(font.clone()); }
+                                if let Some(font) = fonts.get(id) {
+                                    style = style.with_font(font.clone());
+                                }
                             }
                             if let Some(id) = fill_id {
-                                if let Some(fill) = fills.get(id) { style = style.with_fill(fill.clone()); }
+                                if let Some(fill) = fills.get(id) {
+                                    style = style.with_fill(fill.clone());
+                                }
                             }
                             if let Some(id) = border_id {
-                                if let Some(border) = borders.get(id) { style = style.with_borders(border.clone()); }
+                                if let Some(border) = borders.get(id) {
+                                    style = style.with_borders(border.clone());
+                                }
                             }
 
                             cell_style_xfs.push(style);
@@ -731,8 +784,12 @@ impl<RS: Read + Seek> Xlsx<RS> {
                             for a in e.attributes() {
                                 let a = a.map_err(XlsxError::XmlAttr)?;
                                 match a.key.as_ref() {
-                                    b"name" => { name = Some(xml.decoder().decode(&a.value)?.into_owned()); }
-                                    b"xfId" => { xf_id = xml.decoder().decode(&a.value)?.parse().ok(); }
+                                    b"name" => {
+                                        name = Some(xml.decoder().decode(&a.value)?.into_owned());
+                                    }
+                                    b"xfId" => {
+                                        xf_id = xml.decoder().decode(&a.value)?.parse().ok();
+                                    }
                                     _ => {}
                                 }
                             }
@@ -747,8 +804,12 @@ impl<RS: Read + Seek> Xlsx<RS> {
                             for a in e.attributes() {
                                 let a = a.map_err(XlsxError::XmlAttr)?;
                                 match a.key.as_ref() {
-                                    b"name" => { name = Some(xml.decoder().decode(&a.value)?.into_owned()); }
-                                    b"xfId" => { xf_id = xml.decoder().decode(&a.value)?.parse().ok(); }
+                                    b"name" => {
+                                        name = Some(xml.decoder().decode(&a.value)?.into_owned());
+                                    }
+                                    b"xfId" => {
+                                        xf_id = xml.decoder().decode(&a.value)?.parse().ok();
+                                    }
                                     _ => {}
                                 }
                             }
@@ -779,7 +840,8 @@ impl<RS: Read + Seek> Xlsx<RS> {
                                 let a = a.map_err(XlsxError::XmlAttr)?;
                                 match a.key.as_ref() {
                                     b"xfId" => {
-                                        xf_id = xml.decoder().decode(&a.value)?.parse().unwrap_or(0);
+                                        xf_id =
+                                            xml.decoder().decode(&a.value)?.parse().unwrap_or(0);
                                     }
                                     b"fontId" => {
                                         font_id = xml.decoder().decode(&a.value)?.parse().ok();
@@ -791,13 +853,16 @@ impl<RS: Read + Seek> Xlsx<RS> {
                                         border_id = xml.decoder().decode(&a.value)?.parse().ok();
                                     }
                                     b"applyFont" => {
-                                        apply_font = a.value.as_ref() == b"1" || a.value.as_ref() == b"true";
+                                        apply_font =
+                                            a.value.as_ref() == b"1" || a.value.as_ref() == b"true";
                                     }
                                     b"applyFill" => {
-                                        apply_fill = a.value.as_ref() == b"1" || a.value.as_ref() == b"true";
+                                        apply_fill =
+                                            a.value.as_ref() == b"1" || a.value.as_ref() == b"true";
                                     }
                                     b"applyBorder" => {
-                                        apply_border = a.value.as_ref() == b"1" || a.value.as_ref() == b"true";
+                                        apply_border =
+                                            a.value.as_ref() == b"1" || a.value.as_ref() == b"true";
                                     }
                                     b"numFmtId" => {
                                         num_fmt_id = xml.decoder().decode(&a.value)?.parse().ok();
@@ -834,43 +899,48 @@ impl<RS: Read + Seek> Xlsx<RS> {
                                 let fmt_id_bytes = nfid.to_string().into_bytes();
                                 let format_code = match number_formats.get(&fmt_id_bytes) {
                                     Some(fmt) => fmt.clone(),
-                                    None => {
-                                        match nfid {
-                                            0 => "General".to_string(),
-                                            1 => "0".to_string(),
-                                            2 => "0.00".to_string(),
-                                            3 => "#,##0".to_string(),
-                                            4 => "#,##0.00".to_string(),
-                                            9 => "0%".to_string(),
-                                            10 => "0.00%".to_string(),
-                                            11 => "0.00E+00".to_string(),
-                                            12 => "# ?/?".to_string(),
-                                            13 => "# ??/??".to_string(),
-                                            14 => "mm-dd-yy".to_string(),
-                                            15 => "d-mmm-yy".to_string(),
-                                            16 => "d-mmm".to_string(),
-                                            17 => "mmm-yy".to_string(),
-                                            18 => "h:mm AM/PM".to_string(),
-                                            19 => "h:mm:ss AM/PM".to_string(),
-                                            20 => "h:mm".to_string(),
-                                            21 => "h:mm:ss".to_string(),
-                                            22 => "m/d/yy h:mm".to_string(),
-                                            37 => "#,##0 ;(#,##0)".to_string(),
-                                            38 => "#,##0 ;[Red](#,##0)".to_string(),
-                                            39 => "#,##0.00;(#,##0.00)".to_string(),
-                                            40 => "#,##0.00;[Red](#,##0.00)".to_string(),
-                                            41 => "_(* #,##0_);_(* (#,##0);_(* \"-\"_);_(@_)".to_string(),
-                                            42 => "_($* #,##0_);_($* (#,##0);_($* \"-\"_);_(@_)".to_string(),
-                                            43 => "_(* #,##0.00_);_(* (#,##0.00);_(* \"-\"??_);_(@_)".to_string(),
-                                            44 => "_($* #,##0.00_);_($* (#,##0.00);_($* \"-\"??_);_(@_)".to_string(),
-                                            45 => "mm:ss".to_string(),
-                                            46 => "[h]:mm:ss".to_string(),
-                                            47 => "mmss.0".to_string(),
-                                            48 => "##0.0E+0".to_string(),
-                                            49 => "@".to_string(),
-                                            _ => "General".to_string(),
+                                    None => match nfid {
+                                        0 => "General".to_string(),
+                                        1 => "0".to_string(),
+                                        2 => "0.00".to_string(),
+                                        3 => "#,##0".to_string(),
+                                        4 => "#,##0.00".to_string(),
+                                        9 => "0%".to_string(),
+                                        10 => "0.00%".to_string(),
+                                        11 => "0.00E+00".to_string(),
+                                        12 => "# ?/?".to_string(),
+                                        13 => "# ??/??".to_string(),
+                                        14 => "mm-dd-yy".to_string(),
+                                        15 => "d-mmm-yy".to_string(),
+                                        16 => "d-mmm".to_string(),
+                                        17 => "mmm-yy".to_string(),
+                                        18 => "h:mm AM/PM".to_string(),
+                                        19 => "h:mm:ss AM/PM".to_string(),
+                                        20 => "h:mm".to_string(),
+                                        21 => "h:mm:ss".to_string(),
+                                        22 => "m/d/yy h:mm".to_string(),
+                                        37 => "#,##0 ;(#,##0)".to_string(),
+                                        38 => "#,##0 ;[Red](#,##0)".to_string(),
+                                        39 => "#,##0.00;(#,##0.00)".to_string(),
+                                        40 => "#,##0.00;[Red](#,##0.00)".to_string(),
+                                        41 => {
+                                            "_(* #,##0_);_(* (#,##0);_(* \"-\"_);_(@_)".to_string()
                                         }
-                                    }
+                                        42 => "_($* #,##0_);_($* (#,##0);_($* \"-\"_);_(@_)"
+                                            .to_string(),
+                                        43 => "_(* #,##0.00_);_(* (#,##0.00);_(* \"-\"??_);_(@_)"
+                                            .to_string(),
+                                        44 => {
+                                            "_($* #,##0.00_);_($* (#,##0.00);_($* \"-\"??_);_(@_)"
+                                                .to_string()
+                                        }
+                                        45 => "mm:ss".to_string(),
+                                        46 => "[h]:mm:ss".to_string(),
+                                        47 => "mmss.0".to_string(),
+                                        48 => "##0.0E+0".to_string(),
+                                        49 => "@".to_string(),
+                                        _ => "General".to_string(),
+                                    },
                                 };
 
                                 use crate::style::NumberFormat;
@@ -893,8 +963,9 @@ impl<RS: Read + Seek> Xlsx<RS> {
                                             style = style.with_alignment(alignment);
                                         }
                                         b"protection" => {
-                                            let protection =
-                                                style_parser::parse_protection(&mut xml, &nested_e)?;
+                                            let protection = style_parser::parse_protection(
+                                                &mut xml, &nested_e,
+                                            )?;
                                             style = style.with_protection(protection);
                                         }
                                         _ => {
@@ -917,135 +988,6 @@ impl<RS: Read + Seek> Xlsx<RS> {
                             self.styles.push(style.with_style_id(style_index));
 
                             // Also add format for backward compatibility
-                            self.formats.push(
-                                e.attributes()
-                                    .filter_map(|a| a.ok())
-                                    .find(|a| a.key == QName(b"numFmtId"))
-                                    .map_or(CellFormat::Other, |a| {
-                                        match number_formats.get(&*a.value) {
-                                            Some(fmt) => detect_custom_number_format(fmt),
-                                            None => builtin_format_by_id(&a.value),
-                                        }
-                                    }),
-                            );
-                        }
-                        Ok(Event::Empty(e)) if e.local_name().as_ref() == b"xf" => {
-                            let mut xf_id: usize = 0;
-                            let mut font_id: Option<usize> = None;
-                            let mut fill_id: Option<usize> = None;
-                            let mut border_id: Option<usize> = None;
-                            let mut apply_font = false;
-                            let mut apply_fill = false;
-                            let mut apply_border = false;
-                            let mut num_fmt_id: Option<u32> = None;
-
-                            for a in e.attributes() {
-                                let a = a.map_err(XlsxError::XmlAttr)?;
-                                match a.key.as_ref() {
-                                    b"xfId" => {
-                                        xf_id = xml.decoder().decode(&a.value)?.parse().unwrap_or(0);
-                                    }
-                                    b"fontId" => {
-                                        font_id = xml.decoder().decode(&a.value)?.parse().ok();
-                                    }
-                                    b"fillId" => {
-                                        fill_id = xml.decoder().decode(&a.value)?.parse().ok();
-                                    }
-                                    b"borderId" => {
-                                        border_id = xml.decoder().decode(&a.value)?.parse().ok();
-                                    }
-                                    b"applyFont" => {
-                                        apply_font = a.value.as_ref() == b"1" || a.value.as_ref() == b"true";
-                                    }
-                                    b"applyFill" => {
-                                        apply_fill = a.value.as_ref() == b"1" || a.value.as_ref() == b"true";
-                                    }
-                                    b"applyBorder" => {
-                                        apply_border = a.value.as_ref() == b"1" || a.value.as_ref() == b"true";
-                                    }
-                                    b"numFmtId" => {
-                                        num_fmt_id = xml.decoder().decode(&a.value)?.parse().ok();
-                                    }
-                                    _ => {}
-                                }
-                            }
-
-                            let mut style = cell_style_xfs.get(xf_id).cloned().unwrap_or_default();
-
-                            if apply_font {
-                                if let Some(id) = font_id {
-                                    if let Some(font) = fonts.get(id) {
-                                        style = style.with_font(font.clone());
-                                    }
-                                }
-                            }
-                            if apply_fill {
-                                if let Some(id) = fill_id {
-                                    if let Some(fill) = fills.get(id) {
-                                        style = style.with_fill(fill.clone());
-                                    }
-                                }
-                            }
-                            if apply_border {
-                                if let Some(id) = border_id {
-                                    if let Some(border) = borders.get(id) {
-                                        style = style.with_borders(border.clone());
-                                    }
-                                }
-                            }
-
-                            if let Some(nfid) = num_fmt_id {
-                                let fmt_id_bytes = nfid.to_string().into_bytes();
-                                let format_code = match number_formats.get(&fmt_id_bytes) {
-                                    Some(fmt) => fmt.clone(),
-                                    None => {
-                                        match nfid {
-                                            0 => "General".to_string(),
-                                            1 => "0".to_string(),
-                                            2 => "0.00".to_string(),
-                                            3 => "#,##0".to_string(),
-                                            4 => "#,##0.00".to_string(),
-                                            9 => "0%".to_string(),
-                                            10 => "0.00%".to_string(),
-                                            11 => "0.00E+00".to_string(),
-                                            12 => "# ?/?".to_string(),
-                                            13 => "# ??/??".to_string(),
-                                            14 => "mm-dd-yy".to_string(),
-                                            15 => "d-mmm-yy".to_string(),
-                                            16 => "d-mmm".to_string(),
-                                            17 => "mmm-yy".to_string(),
-                                            18 => "h:mm AM/PM".to_string(),
-                                            19 => "h:mm:ss AM/PM".to_string(),
-                                            20 => "h:mm".to_string(),
-                                            21 => "h:mm:ss".to_string(),
-                                            22 => "m/d/yy h:mm".to_string(),
-                                            37 => "#,##0 ;(#,##0)".to_string(),
-                                            38 => "#,##0 ;[Red](#,##0)".to_string(),
-                                            39 => "#,##0.00;(#,##0.00)".to_string(),
-                                            40 => "#,##0.00;[Red](#,##0.00)".to_string(),
-                                            41 => "_(* #,##0_);_(* (#,##0);_(* \"-\"_);_(@_)".to_string(),
-                                            42 => "_($* #,##0_);_($* (#,##0);_($* \"-\"_);_(@_)".to_string(),
-                                            43 => "_(* #,##0.00_);_(* (#,##0.00);_(* \"-\"??_);_(@_)".to_string(),
-                                            44 => "_($* #,##0.00_);_($* (#,##0.00);_($* \"-\"??_);_(@_)".to_string(),
-                                            45 => "mm:ss".to_string(),
-                                            46 => "[h]:mm:ss".to_string(),
-                                            47 => "mmss.0".to_string(),
-                                            48 => "##0.0E+0".to_string(),
-                                            49 => "@".to_string(),
-                                            _ => "General".to_string(),
-                                        }
-                                    }
-                                };
-
-                                use crate::style::NumberFormat;
-                                let number_format = NumberFormat::new(format_code).with_id(nfid);
-                                style = style.with_number_format(number_format);
-                            }
-
-                            style.xf_id = Some(xf_id);
-                            let style_index = self.styles.len() as u32;
-                            self.styles.push(style.with_style_id(style_index));
-
                             self.formats.push(
                                 e.attributes()
                                     .filter_map(|a| a.ok())
@@ -1103,12 +1045,16 @@ impl<RS: Read + Seek> Xlsx<RS> {
                                                 style = style.with_borders(border);
                                             }
                                             b"alignment" => {
-                                                let alignment =
-                                                    style_parser::parse_alignment(&mut xml, inner_e)?;
+                                                let alignment = style_parser::parse_alignment(
+                                                    &mut xml, inner_e,
+                                                )?;
                                                 style = style.with_alignment(alignment);
                                             }
                                             _ => {
-                                                xml.read_to_end_into(inner_e.name(), &mut Vec::new())?;
+                                                xml.read_to_end_into(
+                                                    inner_e.name(),
+                                                    &mut Vec::new(),
+                                                )?;
                                             }
                                         }
                                     }
@@ -2262,6 +2208,29 @@ impl<RS: Read + Seek> Xlsx<RS> {
         XlsxCellReader::new(xml, strings, formats, styles, is_1904)
     }
 
+    /// Get the worksheet item reader for a worksheet.
+    ///
+    /// This reader streams worksheet layout metadata, cells, and merged regions
+    /// from a single worksheet XML pass.
+    pub fn worksheet_items_reader<'a>(
+        &'a mut self,
+        name: &str,
+    ) -> Result<XlsxWorksheetItemReader<'a, RS>, XlsxError> {
+        let (_, path) = self
+            .sheets
+            .iter()
+            .find(|&(n, _)| n == name)
+            .ok_or_else(|| XlsxError::WorksheetNotFound(name.into()))?;
+        let xml = xml_reader(&mut self.zip, path)
+            .ok_or_else(|| XlsxError::WorksheetNotFound(name.into()))??;
+        let is_1904 = self.is_1904;
+        let strings = &self.strings;
+        let formats = &self.formats;
+        let styles = &self.styles;
+        let theme = self.theme.as_ref();
+        XlsxWorksheetItemReader::new(xml, strings, formats, styles, theme, is_1904)
+    }
+
     /// Get the styles for a worksheet.
     ///
     /// This function returns a [`Range<Style>`] for the specified worksheet.
@@ -2319,27 +2288,23 @@ impl<RS: Read + Seek> Xlsx<RS> {
         loop {
             buf.clear();
             match xml.read_event_into(&mut buf) {
-                Ok(Event::Start(ref e)) if e.local_name().as_ref() == b"sheetPr" => {
-                    loop {
-                        buf.clear();
-                        match xml.read_event_into(&mut buf) {
-                            Ok(Event::Start(ref inner_e) | Event::Empty(ref inner_e))
-                                if inner_e.local_name().as_ref() == b"tabColor" =>
-                            {
-                                sheet_settings.tab_color =
-                                    parse_color_from_attrs(&inner_e.attributes(), self.theme.as_ref());
-                            }
-                            Ok(Event::End(ref end_e))
-                                if end_e.local_name().as_ref() == b"sheetPr" =>
-                            {
-                                break;
-                            }
-                            Ok(Event::Eof) => break,
-                            Err(e) => return Err(XlsxError::Xml(e)),
-                            _ => {}
+                Ok(Event::Start(ref e)) if e.local_name().as_ref() == b"sheetPr" => loop {
+                    buf.clear();
+                    match xml.read_event_into(&mut buf) {
+                        Ok(Event::Start(ref inner_e) | Event::Empty(ref inner_e))
+                            if inner_e.local_name().as_ref() == b"tabColor" =>
+                        {
+                            sheet_settings.tab_color =
+                                parse_color_from_attrs(&inner_e.attributes(), self.theme.as_ref());
                         }
+                        Ok(Event::End(ref end_e)) if end_e.local_name().as_ref() == b"sheetPr" => {
+                            break;
+                        }
+                        Ok(Event::Eof) => break,
+                        Err(e) => return Err(XlsxError::Xml(e)),
+                        _ => {}
                     }
-                }
+                },
                 Ok(Event::Start(ref e)) if e.local_name().as_ref() == b"sheetViews" => {
                     // Parse sheetViews for gridlines and freeze panes
                     loop {
@@ -2351,8 +2316,9 @@ impl<RS: Read + Seek> Xlsx<RS> {
                                 for attr in view_e.attributes() {
                                     let attr = attr.map_err(XlsxError::XmlAttr)?;
                                     if attr.key.as_ref() == b"showGridLines" {
-                                        sheet_settings.show_grid_lines =
-                                            attr.value.as_ref() != b"0" && attr.value.as_ref() != b"false";
+                                        sheet_settings.show_grid_lines = attr.value.as_ref()
+                                            != b"0"
+                                            && attr.value.as_ref() != b"false";
                                     }
                                 }
                             }
@@ -2362,8 +2328,9 @@ impl<RS: Read + Seek> Xlsx<RS> {
                                 for attr in view_e.attributes() {
                                     let attr = attr.map_err(XlsxError::XmlAttr)?;
                                     if attr.key.as_ref() == b"showGridLines" {
-                                        sheet_settings.show_grid_lines =
-                                            attr.value.as_ref() != b"0" && attr.value.as_ref() != b"false";
+                                        sheet_settings.show_grid_lines = attr.value.as_ref()
+                                            != b"0"
+                                            && attr.value.as_ref() != b"false";
                                     }
                                 }
                                 loop {
@@ -2377,25 +2344,38 @@ impl<RS: Read + Seek> Xlsx<RS> {
                                                 let attr = attr.map_err(XlsxError::XmlAttr)?;
                                                 match attr.key.as_ref() {
                                                     b"xSplit" => {
-                                                        if let Ok(s) = xml.decoder().decode(&attr.value) {
-                                                            freeze.x_split = s.parse().unwrap_or(0.0);
+                                                        if let Ok(s) =
+                                                            xml.decoder().decode(&attr.value)
+                                                        {
+                                                            freeze.x_split =
+                                                                s.parse().unwrap_or(0.0);
                                                         }
                                                     }
                                                     b"ySplit" => {
-                                                        if let Ok(s) = xml.decoder().decode(&attr.value) {
-                                                            freeze.y_split = s.parse().unwrap_or(0.0);
+                                                        if let Ok(s) =
+                                                            xml.decoder().decode(&attr.value)
+                                                        {
+                                                            freeze.y_split =
+                                                                s.parse().unwrap_or(0.0);
                                                         }
                                                     }
                                                     b"topLeftCell" => {
-                                                        if let Ok(s) = xml.decoder().decode(&attr.value) {
-                                                            freeze.top_left_cell = Some(s.to_string());
+                                                        if let Ok(s) =
+                                                            xml.decoder().decode(&attr.value)
+                                                        {
+                                                            freeze.top_left_cell =
+                                                                Some(s.to_string());
                                                         }
                                                     }
                                                     b"state" => {
-                                                        if let Ok(s) = xml.decoder().decode(&attr.value) {
+                                                        if let Ok(s) =
+                                                            xml.decoder().decode(&attr.value)
+                                                        {
                                                             freeze.state = match s.as_ref() {
                                                                 "frozen" => PaneState::Frozen,
-                                                                "frozenSplit" => PaneState::FrozenSplit,
+                                                                "frozenSplit" => {
+                                                                    PaneState::FrozenSplit
+                                                                }
                                                                 "split" => PaneState::Split,
                                                                 _ => PaneState::Frozen,
                                                             };
@@ -2514,7 +2494,8 @@ impl<RS: Read + Seek> Xlsx<RS> {
                                             best_fit = attr.value.as_ref() != b"0";
                                         }
                                         b"outlineLevel" => {
-                                            if let Ok(level_str) = xml.decoder().decode(&attr.value) {
+                                            if let Ok(level_str) = xml.decoder().decode(&attr.value)
+                                            {
                                                 if let Ok(level) = level_str.parse::<u8>() {
                                                     outline_level = level.min(7);
                                                 }
@@ -2598,7 +2579,8 @@ impl<RS: Read + Seek> Xlsx<RS> {
                                             thick_bottom = attr.value.as_ref() != b"0";
                                         }
                                         b"outlineLevel" => {
-                                            if let Ok(level_str) = xml.decoder().decode(&attr.value) {
+                                            if let Ok(level_str) = xml.decoder().decode(&attr.value)
+                                            {
                                                 if let Ok(l) = level_str.parse::<u8>() {
                                                     outline_level = l.min(7);
                                                 }
@@ -2855,7 +2837,7 @@ impl<RS: Read + Seek> Xlsx<RS> {
             }
         }
 
-        Ok(comments_map.entry(name.to_string()).or_insert(Vec::new()))
+        Ok(comments_map.entry(name.to_string()).or_default())
     }
 
     /// Get persons metadata for threaded comments
@@ -3031,115 +3013,99 @@ impl<RS: Read + Seek> Reader<RS> for Xlsx<RS> {
         loop {
             buf.clear();
             match xml.read_event_into(&mut buf) {
-                Ok(Event::Start(ref e)) if e.local_name().as_ref() == b"sheetPr" => {
-                    loop {
-                        buf.clear();
-                        match xml.read_event_into(&mut buf) {
-                            Ok(Event::Empty(ref tab_e))
-                                if tab_e.local_name().as_ref() == b"tabColor" =>
-                            {
-                                sheet_settings.tab_color =
-                                    parse_color_from_attrs(&tab_e.attributes(), self.theme.as_ref());
-                            }
-                            Ok(Event::End(ref end_e))
-                                if end_e.local_name().as_ref() == b"sheetPr" =>
-                            {
-                                break;
-                            }
-                            Ok(Event::Eof) => return Err(XlsxError::XmlEof("sheetPr")),
-                            Err(e) => return Err(XlsxError::Xml(e)),
-                            _ => {}
+                Ok(Event::Start(ref e)) if e.local_name().as_ref() == b"sheetPr" => loop {
+                    buf.clear();
+                    match xml.read_event_into(&mut buf) {
+                        Ok(Event::Empty(ref tab_e))
+                            if tab_e.local_name().as_ref() == b"tabColor" =>
+                        {
+                            sheet_settings.tab_color =
+                                parse_color_from_attrs(&tab_e.attributes(), self.theme.as_ref());
                         }
+                        Ok(Event::End(ref end_e)) if end_e.local_name().as_ref() == b"sheetPr" => {
+                            break;
+                        }
+                        Ok(Event::Eof) => return Err(XlsxError::XmlEof("sheetPr")),
+                        Err(e) => return Err(XlsxError::Xml(e)),
+                        _ => {}
                     }
-                }
-                Ok(Event::Start(ref e)) if e.local_name().as_ref() == b"sheetViews" => {
-                    loop {
-                        buf.clear();
-                        match xml.read_event_into(&mut buf) {
-                            Ok(Event::Start(ref view_e))
-                                if view_e.local_name().as_ref() == b"sheetView" =>
-                            {
-                                for attr in view_e.attributes().flatten() {
-                                    if attr.key.as_ref() == b"showGridLines" {
-                                        sheet_settings.show_grid_lines =
-                                            attr.value.as_ref() != b"0";
-                                    }
+                },
+                Ok(Event::Start(ref e)) if e.local_name().as_ref() == b"sheetViews" => loop {
+                    buf.clear();
+                    match xml.read_event_into(&mut buf) {
+                        Ok(Event::Start(ref view_e))
+                            if view_e.local_name().as_ref() == b"sheetView" =>
+                        {
+                            for attr in view_e.attributes().flatten() {
+                                if attr.key.as_ref() == b"showGridLines" {
+                                    sheet_settings.show_grid_lines = attr.value.as_ref() != b"0";
                                 }
-                                loop {
-                                    buf.clear();
-                                    match xml.read_event_into(&mut buf) {
-                                        Ok(Event::Empty(ref pane_e))
-                                            if pane_e.local_name().as_ref() == b"pane" =>
-                                        {
-                                            let mut freeze = FreezePanes::default();
-                                            for attr in pane_e.attributes().flatten() {
-                                                match attr.key.as_ref() {
-                                                    b"xSplit" => {
-                                                        if let Ok(s) =
-                                                            std::str::from_utf8(&attr.value)
-                                                        {
-                                                            if let Ok(v) = s.parse::<f64>() {
-                                                                freeze.x_split = v;
-                                                            }
+                            }
+                            loop {
+                                buf.clear();
+                                match xml.read_event_into(&mut buf) {
+                                    Ok(Event::Empty(ref pane_e))
+                                        if pane_e.local_name().as_ref() == b"pane" =>
+                                    {
+                                        let mut freeze = FreezePanes::default();
+                                        for attr in pane_e.attributes().flatten() {
+                                            match attr.key.as_ref() {
+                                                b"xSplit" => {
+                                                    if let Ok(s) = std::str::from_utf8(&attr.value)
+                                                    {
+                                                        if let Ok(v) = s.parse::<f64>() {
+                                                            freeze.x_split = v;
                                                         }
                                                     }
-                                                    b"ySplit" => {
-                                                        if let Ok(s) =
-                                                            std::str::from_utf8(&attr.value)
-                                                        {
-                                                            if let Ok(v) = s.parse::<f64>() {
-                                                                freeze.y_split = v;
-                                                            }
-                                                        }
-                                                    }
-                                                    b"topLeftCell" => {
-                                                        freeze.top_left_cell = std::str::from_utf8(
-                                                            &attr.value,
-                                                        )
-                                                        .ok()
-                                                        .map(|s| s.to_string());
-                                                    }
-                                                    b"state" => match attr.value.as_ref() {
-                                                        b"frozen" => {
-                                                            freeze.state = PaneState::Frozen
-                                                        }
-                                                        b"frozenSplit" => {
-                                                            freeze.state = PaneState::FrozenSplit
-                                                        }
-                                                        b"split" => {
-                                                            freeze.state = PaneState::Split
-                                                        }
-                                                        _ => {}
-                                                    },
-                                                    _ => {}
                                                 }
+                                                b"ySplit" => {
+                                                    if let Ok(s) = std::str::from_utf8(&attr.value)
+                                                    {
+                                                        if let Ok(v) = s.parse::<f64>() {
+                                                            freeze.y_split = v;
+                                                        }
+                                                    }
+                                                }
+                                                b"topLeftCell" => {
+                                                    freeze.top_left_cell =
+                                                        std::str::from_utf8(&attr.value)
+                                                            .ok()
+                                                            .map(|s| s.to_string());
+                                                }
+                                                b"state" => match attr.value.as_ref() {
+                                                    b"frozen" => freeze.state = PaneState::Frozen,
+                                                    b"frozenSplit" => {
+                                                        freeze.state = PaneState::FrozenSplit
+                                                    }
+                                                    b"split" => freeze.state = PaneState::Split,
+                                                    _ => {}
+                                                },
+                                                _ => {}
                                             }
-                                            sheet_settings.freeze_panes = Some(freeze);
                                         }
-                                        Ok(Event::End(ref end_e))
-                                            if end_e.local_name().as_ref() == b"sheetView" =>
-                                        {
-                                            break;
-                                        }
-                                        Ok(Event::Eof) => {
-                                            return Err(XlsxError::XmlEof("sheetView"))
-                                        }
-                                        Err(e) => return Err(XlsxError::Xml(e)),
-                                        _ => {}
+                                        sheet_settings.freeze_panes = Some(freeze);
                                     }
+                                    Ok(Event::End(ref end_e))
+                                        if end_e.local_name().as_ref() == b"sheetView" =>
+                                    {
+                                        break;
+                                    }
+                                    Ok(Event::Eof) => return Err(XlsxError::XmlEof("sheetView")),
+                                    Err(e) => return Err(XlsxError::Xml(e)),
+                                    _ => {}
                                 }
                             }
-                            Ok(Event::End(ref end_e))
-                                if end_e.local_name().as_ref() == b"sheetViews" =>
-                            {
-                                break;
-                            }
-                            Ok(Event::Eof) => return Err(XlsxError::XmlEof("sheetViews")),
-                            Err(e) => return Err(XlsxError::Xml(e)),
-                            _ => {}
                         }
+                        Ok(Event::End(ref end_e))
+                            if end_e.local_name().as_ref() == b"sheetViews" =>
+                        {
+                            break;
+                        }
+                        Ok(Event::Eof) => return Err(XlsxError::XmlEof("sheetViews")),
+                        Err(e) => return Err(XlsxError::Xml(e)),
+                        _ => {}
                     }
-                }
+                },
                 Ok(Event::Start(ref e)) if e.local_name().as_ref() == b"sheetFormatPr" => {
                     // Parse default column width and row height
                     for attr in e.attributes() {
@@ -3224,7 +3190,8 @@ impl<RS: Read + Seek> Reader<RS> for Xlsx<RS> {
                                             best_fit = attr.value.as_ref() != b"0";
                                         }
                                         b"outlineLevel" => {
-                                            if let Ok(level_str) = xml.decoder().decode(&attr.value) {
+                                            if let Ok(level_str) = xml.decoder().decode(&attr.value)
+                                            {
                                                 if let Ok(level) = level_str.parse::<u8>() {
                                                     outline_level = level.min(7);
                                                 }
@@ -3308,7 +3275,8 @@ impl<RS: Read + Seek> Reader<RS> for Xlsx<RS> {
                                             thick_bottom = attr.value.as_ref() != b"0";
                                         }
                                         b"outlineLevel" => {
-                                            if let Ok(level_str) = xml.decoder().decode(&attr.value) {
+                                            if let Ok(level_str) = xml.decoder().decode(&attr.value)
+                                            {
                                                 if let Ok(l) = level_str.parse::<u8>() {
                                                     outline_level = l.min(7);
                                                 }
@@ -3952,11 +3920,9 @@ where
     loop {
         buf.clear();
         match xml.read_event_into(&mut buf) {
-            Ok(Event::Start(e)) if e.local_name().as_ref() == b"r" => {
-                if rich_buffer.is_none() {
-                    // use a buffer since richtext has multiples <r> and <t> for the same cell
-                    rich_buffer = Some(String::new());
-                }
+            Ok(Event::Start(e)) if e.local_name().as_ref() == b"r" && rich_buffer.is_none() => {
+                // use a buffer since richtext has multiples <r> and <t> for the same cell
+                rich_buffer = Some(String::new());
             }
             Ok(Event::Start(e)) if e.local_name().as_ref() == b"rPh" => {
                 is_phonetic_text = true;

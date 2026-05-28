@@ -343,10 +343,8 @@ impl<RS: Read + Seek> Xls<RS> {
                     // 2.4.117 FilePass
                     0x002F if read_u16(r.data) != 0 => return Err(XlsError::Password),
                     // CodePage
-                    0x0042 => {
-                        if self.options.force_codepage.is_none() {
-                            encoding = XlsEncoding::from_codepage(read_u16(r.data))?;
-                        }
+                    0x0042 if self.options.force_codepage.is_none() => {
+                        encoding = XlsEncoding::from_codepage(read_u16(r.data))?;
                     }
                     0x013D => {
                         let sheet_len = r.data.len() / 2;
@@ -354,10 +352,8 @@ impl<RS: Read + Seek> Xls<RS> {
                         self.metadata.sheets.reserve(sheet_len);
                     }
                     // Date1904
-                    0x0022 => {
-                        if read_u16(r.data) == 1 {
-                            self.is_1904 = true;
-                        }
+                    0x0022 if read_u16(r.data) == 1 => {
+                        self.is_1904 = true;
                     }
                     // 2.4.126 FORMATTING
                     0x041E => match parse_format(&mut r, &encoding, biff) {
@@ -620,7 +616,11 @@ fn parse_sheet_metadata(
     Ok((pos, Sheet { name, typ, visible }))
 }
 
-fn parse_number<'a>(r: &[u8], formats: &[CellFormat], is_1904: bool) -> Result<Cell<'a, Data>, XlsError> {
+fn parse_number<'a>(
+    r: &[u8],
+    formats: &[CellFormat],
+    is_1904: bool,
+) -> Result<Cell<'a, Data>, XlsError> {
     if r.len() < 14 {
         return Err(XlsError::Len {
             typ: "number",
@@ -674,7 +674,11 @@ fn parse_err(e: u8) -> Result<Data, XlsError> {
     }
 }
 
-fn parse_rk<'a>(r: &[u8], formats: &[CellFormat], is_1904: bool) -> Result<Cell<'a, Data>, XlsError> {
+fn parse_rk<'a>(
+    r: &[u8],
+    formats: &[CellFormat],
+    is_1904: bool,
+) -> Result<Cell<'a, Data>, XlsError> {
     if r.len() < 10 {
         return Err(XlsError::Len {
             typ: "rk",
@@ -737,11 +741,8 @@ fn parse_mul_rk(
         });
     }
 
-    let mut col = col_first as u32;
-
-    for rk in r[4..r.len() - 2].chunks(6) {
+    for (col, rk) in (col_first as u32..).zip(r[4..r.len() - 2].chunks(6)) {
         cells.push(Cell::new((row as u32, col), rk_num(rk, formats, is_1904)));
-        col += 1;
     }
     Ok(())
 }
@@ -821,7 +822,11 @@ fn parse_string(r: &[u8], encoding: &XlsEncoding, biff: Biff) -> Result<String, 
     Ok(s)
 }
 
-fn parse_label<'a>(r: &[u8], encoding: &XlsEncoding, biff: Biff) -> Result<Cell<'a, Data>, XlsError> {
+fn parse_label<'a>(
+    r: &[u8],
+    encoding: &XlsEncoding,
+    biff: Biff,
+) -> Result<Cell<'a, Data>, XlsError> {
     if r.len() < 6 {
         return Err(XlsError::Len {
             typ: "label",

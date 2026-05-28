@@ -2659,27 +2659,13 @@ fn test_worksheet_layout() {
     let mut xlsx: Xlsx<_> = wb("styles.xlsx");
     let layout = xlsx.worksheet_layout("Sheet 1").unwrap();
 
-    // Check what layout information is actually available
-    // Some Excel files may not have explicit layout information
-    if layout.default_column_width.is_none() {
-        // This might be expected for some Excel files
-        assert!(
-            true,
-            "Layout parsing works even without default column width"
-        );
-    } else {
-        assert_eq!(layout.default_column_width, Some(8.43));
+    if let Some(default_column_width) = layout.default_column_width {
+        assert_eq!(default_column_width, 8.43);
     }
 
-    if layout.default_row_height.is_none() {
-        assert!(true, "Layout parsing works even without default row height");
-    } else {
-        assert_eq!(layout.default_row_height, Some(15.0));
+    if let Some(default_row_height) = layout.default_row_height {
+        assert_eq!(default_row_height, 15.0);
     }
-
-    // Just verify we can read the layout without panicking
-    assert!(layout.column_widths.len() >= 0);
-    assert!(layout.row_heights.len() >= 0);
 }
 
 #[test]
@@ -2725,22 +2711,29 @@ fn test_border_colors() {
                 if let Some(borders) = &style.borders {
                     // Check each border side for styles and colors
                     for border in [&borders.left, &borders.right, &borders.top, &borders.bottom] {
-                        if border.style != BorderStyle::None && border.color.is_some() {
-                            match border.style {
-                                BorderStyle::Thin => {
-                                    found_thin_with_color = true;
+                        if border.style != BorderStyle::None {
+                            if let Some(color) = border.color {
+                                match border.style {
+                                    BorderStyle::Thin => {
+                                        found_thin_with_color = true;
+                                    }
+                                    BorderStyle::Dashed => {
+                                        found_dashed_with_color = true;
+                                    }
+                                    _ => {}
                                 }
-                                BorderStyle::Dashed => {
-                                    found_dashed_with_color = true;
-                                }
-                                _ => {}
-                            }
 
-                            // Verify the color is red as expected
-                            let color = border.color.unwrap();
-                            assert_eq!(color.red, 255, "Expected red color component to be 255");
-                            assert_eq!(color.green, 0, "Expected green color component to be 0");
-                            assert_eq!(color.blue, 0, "Expected blue color component to be 0");
+                                // Verify the color is red as expected
+                                assert_eq!(
+                                    color.red, 255,
+                                    "Expected red color component to be 255"
+                                );
+                                assert_eq!(
+                                    color.green, 0,
+                                    "Expected green color component to be 0"
+                                );
+                                assert_eq!(color.blue, 0, "Expected blue color component to be 0");
+                            }
                         }
                     }
                 }
@@ -2772,17 +2765,6 @@ fn test_problematic_formats() {
     let a1_font = a1_style
         .get_font()
         .expect("A1 should have font information");
-
-    // Verify font properties - check what we actually have
-    if a1_font.name.is_none() {
-        // If no font name, that might be expected for some Excel files
-        // Just verify we can read the font without panicking
-        assert!(true, "Font parsing works even without explicit name");
-    }
-    if a1_font.size.is_none() {
-        // If no font size, that might be expected for some Excel files
-        assert!(true, "Font parsing works even without explicit size");
-    }
 
     // Check font color - should be white
     if let Some(color) = a1_font.color {
@@ -2881,12 +2863,6 @@ fn test_color_parsing_with_styles() {
             if let Some(font) = style.get_font() {
                 if let Some(color) = font.color {
                     cells_with_font_colors += 1;
-
-                    // Verify color values are valid (0-255 range)
-                    assert!(color.red <= 255, "Red component should be <= 255");
-                    assert!(color.green <= 255, "Green component should be <= 255");
-                    assert!(color.blue <= 255, "Blue component should be <= 255");
-                    assert!(color.alpha <= 255, "Alpha component should be <= 255");
 
                     // Test specific known colors from the styles.xlsx file
                     if row == 4 && col == 0 {

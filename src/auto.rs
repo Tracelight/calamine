@@ -15,6 +15,7 @@ use std::io::BufReader;
 use std::path::Path;
 
 /// A wrapper over all sheets when the file type is not known at static time
+#[allow(clippy::large_enum_variant)]
 pub enum Sheets<RS> {
     /// Xls reader
     Xls(Xls<RS>),
