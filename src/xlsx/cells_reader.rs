@@ -17,7 +17,7 @@ use super::{
     replace_cell_names, Dimensions, Theme, XlReader,
 };
 use crate::{
-    datatype::{CellFormula, CellFull, DataRef},
+    datatype::{CellFormula, CellFull, DataRef, DataTableFormula},
     formats::{format_excel_f64_ref, CellFormat},
     style::{ColumnWidthRange, FreezePanes, PaneState, RowHeight, SheetFormat, SheetSettings},
     utils::unescape_entity_to_buffer,
@@ -1077,7 +1077,17 @@ fn read_cell_full_formula<RS>(
 where
     RS: Read + Seek,
 {
-    let is_shared = matches!(get_attribute(e.attributes(), QName(b"t"))?, Some(b"shared"));
+    let formula_type = get_attribute(e.attributes(), QName(b"t"))?;
+
+    if let Some(b"dataTable") = formula_type {
+        let data_table = parse_data_table_formula(e)?;
+        // The dataTable <f> has no inner text; consume the (expand_empty_elements)
+        // body + matching </f> so the cell loop stays aligned, same as the Text path.
+        read_formula(xml, e)?;
+        return Ok(Some(CellFormula::DataTable(Box::new(data_table))));
+    }
+
+    let is_shared = matches!(formula_type, Some(b"shared"));
 
     if !is_shared {
         let formula = read_formula(xml, e)?.unwrap_or_default();
@@ -1108,6 +1118,40 @@ where
         .ok_or(XlsxError::Unexpected("shared formula parent not found"))?;
 
     Ok(Some(CellFormula::Shared { parent }))
+}
+
+/// Decode the attributes of an `<f t="dataTable" .../>` element into a [`DataTableFormula`].
+fn parse_data_table_formula(e: &BytesStart<'_>) -> Result<DataTableFormula, XlsxError> {
+    let range = match get_attribute(e.attributes(), QName(b"ref"))? {
+        Some(r) => get_dimension(r)?,
+        None => return Err(XlsxError::Unexpected("dataTable <f> missing ref attribute")),
+    };
+    let del1 = matches!(get_attribute(e.attributes(), QName(b"del1"))?, Some(b"1"));
+    let del2 = matches!(get_attribute(e.attributes(), QName(b"del2"))?, Some(b"1"));
+    let r1_raw = get_attribute(e.attributes(), QName(b"r1"))?;
+    let r2_raw = get_attribute(e.attributes(), QName(b"r2"))?;
+    let row_oriented = matches!(get_attribute(e.attributes(), QName(b"dtr"))?, Some(b"1"));
+
+    // two_dimensional iff r2 is present (not from dt2D — non-Excel writers may suppress it).
+    let two_dimensional = r2_raw.is_some();
+    let r1 = if del1 {
+        None
+    } else {
+        r1_raw.map(get_row_column).transpose()?
+    };
+    let r2 = if del2 {
+        None
+    } else {
+        r2_raw.map(get_row_column).transpose()?
+    };
+
+    Ok(DataTableFormula {
+        range,
+        r1,
+        r2,
+        two_dimensional,
+        row_oriented,
+    })
 }
 
 /// read the contents of a <v> cell
