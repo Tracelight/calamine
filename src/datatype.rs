@@ -10,6 +10,7 @@ use serde::de::Visitor;
 use serde::Deserialize;
 
 use super::CellErrorType;
+use super::Dimensions;
 use super::Style;
 
 // Constants used in Excel date calculations.
@@ -82,6 +83,29 @@ impl<'a> From<CellData<'a>> for Data {
     }
 }
 
+/// Recipe for an Excel "Data → What-If Analysis → Data Table" sensitivity grid.
+///
+/// Emitted on the table's top-left body cell — the only cell that carries the
+/// `<f t="dataTable" .../>` element. `range` (the xlsx `ref`) spans the whole
+/// body region. Two-variable tables have `two_dimensional == true`; one-variable
+/// tables use `row_oriented` to disambiguate axis. Deleted inputs (`del1`/`del2`)
+/// decode as `None`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DataTableFormula {
+    /// Body region of the table — from xlsx `<f ref="...">`. 0-indexed (row, col) pairs.
+    pub range: Dimensions,
+    /// First input cell (xlsx `r1`). `None` if `del1="1"` or attribute absent.
+    pub r1: Option<(u32, u32)>,
+    /// Second input cell (xlsx `r2`). `None` for one-variable tables or if `del2="1"`.
+    pub r2: Option<(u32, u32)>,
+    /// `true` iff the xlsx `r2` attribute was present (regardless of `del2`).
+    /// Canonical — not from the `dt2D` attribute, which non-Excel writers may suppress.
+    pub two_dimensional: bool,
+    /// xlsx `dtr` attribute. Only meaningful when `!two_dimensional`.
+    /// `true` → output is a row (inputs above); `false` → output is a column (inputs left).
+    pub row_oriented: bool,
+}
+
 /// Formula information returned by full XLSX cell streaming.
 #[derive(Debug, Clone, PartialEq)]
 pub enum CellFormula {
@@ -89,6 +113,10 @@ pub enum CellFormula {
     Text(String),
     /// Shared formula child that refers to a previously emitted parent cell.
     Shared { parent: (u32, u32) },
+    /// "Data → What-If Analysis → Data Table" body. Carried on the table's
+    /// top-left body cell; `range` spans the whole body. Boxed to keep the
+    /// common `Text`/`Shared` cells small (this variant is rare — one per table).
+    DataTable(Box<DataTableFormula>),
 }
 
 /// Value and formula information returned by full XLSX cell streaming.
