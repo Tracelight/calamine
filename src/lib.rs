@@ -119,7 +119,9 @@ pub use crate::style::{
 };
 pub use crate::xls::{Xls, XlsError, XlsOptions};
 pub use crate::xlsb::{Xlsb, XlsbError};
-pub use crate::xlsx::{WorksheetItem, Xlsx, XlsxError, XlsxWorksheetItemReader};
+pub use crate::xlsx::{
+    Chart, ChartAnchor, ChartSeries, WorksheetItem, Xlsx, XlsxError, XlsxWorksheetItemReader,
+};
 
 use crate::vba::VbaProject;
 
