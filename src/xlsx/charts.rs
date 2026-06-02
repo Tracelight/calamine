@@ -446,12 +446,17 @@ fn read_drawing_frames<RS: Read + Seek>(
     frames
 }
 
+/// The `a:graphicData/@uri` values that identify an embedded chart. Per ISO/IEC
+/// 29500 these are the two equivalent DrawingML chart namespaces: the ECMA-376
+/// transitional one and the strict (purl.oclc.org) one.
+const CHART_GRAPHIC_DATA_URIS: [&[u8]; 2] = [
+    b"http://schemas.openxmlformats.org/drawingml/2006/chart",
+    b"http://purl.oclc.org/ooxml/drawingml/chart",
+];
+
 fn graphic_data_is_chart(e: &BytesStart) -> bool {
     for a in e.attributes().flatten() {
-        if a.key == QName(b"uri")
-            && (a.value.ends_with(b"/drawingml/2006/chart")
-                || a.value.as_ref() == b"http://schemas.openxmlformats.org/drawingml/2006/chart")
-        {
+        if a.key == QName(b"uri") && CHART_GRAPHIC_DATA_URIS.contains(&a.value.as_ref()) {
             return true;
         }
     }
@@ -684,5 +689,24 @@ mod tests {
             drawing_rels_path("xl/drawings/drawing1.xml"),
             Some("xl/drawings/_rels/drawing1.xml.rels".into()),
         );
+    }
+
+    #[test]
+    fn graphic_data_is_chart_matches_transitional_and_strict_namespaces() {
+        let transitional = BytesStart::new("a:graphicData").with_attributes([(
+            "uri",
+            "http://schemas.openxmlformats.org/drawingml/2006/chart",
+        )]);
+        assert!(graphic_data_is_chart(&transitional));
+
+        let strict = BytesStart::new("a:graphicData")
+            .with_attributes([("uri", "http://purl.oclc.org/ooxml/drawingml/chart")]);
+        assert!(graphic_data_is_chart(&strict));
+
+        let table = BytesStart::new("a:graphicData").with_attributes([(
+            "uri",
+            "http://schemas.openxmlformats.org/drawingml/2006/table",
+        )]);
+        assert!(!graphic_data_is_chart(&table));
     }
 }
