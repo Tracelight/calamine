@@ -7,7 +7,7 @@ use quick_xml::{
     name::QName,
 };
 use std::{
-    borrow::Borrow,
+    borrow::{Borrow, Cow},
     collections::HashMap,
     io::{Read, Seek},
 };
@@ -17,7 +17,9 @@ use super::{
     replace_cell_names, Dimensions, Theme, XlReader,
 };
 use crate::{
-    datatype::{CellFormula, CellFull, DataRef},
+    datatype::{
+        CellFormula, CellFull, DataRef, DataTableFormula, DataTableKind, DataTableOrientation,
+    },
     formats::{format_excel_f64_ref, CellFormat},
     style::{ColumnWidthRange, FreezePanes, PaneState, RowHeight, SheetFormat, SheetSettings},
     utils::unescape_entity_to_buffer,
@@ -1077,7 +1079,17 @@ fn read_cell_full_formula<RS>(
 where
     RS: Read + Seek,
 {
-    let is_shared = matches!(get_attribute(e.attributes(), QName(b"t"))?, Some(b"shared"));
+    let formula_type = get_attribute(e.attributes(), QName(b"t"))?;
+
+    if let Some(b"dataTable") = formula_type {
+        let data_table = parse_data_table_formula(e)?;
+        // The dataTable <f> has no inner text; consume the (expand_empty_elements)
+        // body + matching </f> so the cell loop stays aligned, same as the Text path.
+        read_formula(xml, e)?;
+        return Ok(Some(CellFormula::DataTable(Box::new(data_table))));
+    }
+
+    let is_shared = matches!(formula_type, Some(b"shared"));
 
     if !is_shared {
         let formula = read_formula(xml, e)?.unwrap_or_default();
@@ -1108,6 +1120,66 @@ where
         .ok_or(XlsxError::Unexpected("shared formula parent not found"))?;
 
     Ok(Some(CellFormula::Shared { parent }))
+}
+
+/// Decode the attributes of an `<f t="dataTable" .../>` element into a [`DataTableFormula`].
+fn parse_data_table_formula(e: &BytesStart<'_>) -> Result<DataTableFormula, XlsxError> {
+    let mut range = None;
+    let mut del1 = false;
+    let mut del2 = false;
+    let mut row_oriented = false;
+    let mut r1_raw = None;
+    let mut r2_raw = None;
+
+    // Single pass over the attributes rather than re-scanning for each one.
+    // xsd:boolean attributes accept "1" or "true" (Excel writes "1"; other writers may use "true").
+    for attr in e.attributes() {
+        let Attribute { key, value } = attr.map_err(XlsxError::XmlAttr)?;
+        let Cow::Borrowed(value) = value else {
+            continue;
+        };
+        match key.as_ref() {
+            b"ref" => range = Some(get_dimension(value)?),
+            b"del1" => del1 = matches!(value, b"1" | b"true"),
+            b"del2" => del2 = matches!(value, b"1" | b"true"),
+            b"dtr" => row_oriented = matches!(value, b"1" | b"true"),
+            b"r1" => r1_raw = Some(value),
+            b"r2" => r2_raw = Some(value),
+            _ => {}
+        }
+    }
+
+    let range = range.ok_or(XlsxError::Unexpected("dataTable <f> missing ref attribute"))?;
+
+    let r1 = if del1 {
+        None
+    } else {
+        r1_raw.map(get_row_column).transpose()?
+    };
+    let r2 = if del2 {
+        None
+    } else {
+        r2_raw.map(get_row_column).transpose()?
+    };
+
+    // Two-variable iff r2 is present (not from dt2D — non-Excel writers may suppress it).
+    let kind = if r2_raw.is_some() {
+        DataTableKind::TwoVariable {
+            row_input: r1,
+            col_input: r2,
+        }
+    } else {
+        DataTableKind::OneVariable {
+            input: r1,
+            orientation: if row_oriented {
+                DataTableOrientation::Row
+            } else {
+                DataTableOrientation::Column
+            },
+        }
+    };
+
+    Ok(DataTableFormula { range, kind })
 }
 
 /// read the contents of a <v> cell

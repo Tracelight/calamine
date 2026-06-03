@@ -10,6 +10,7 @@ use serde::de::Visitor;
 use serde::Deserialize;
 
 use super::CellErrorType;
+use super::Dimensions;
 use super::Style;
 
 // Constants used in Excel date calculations.
@@ -82,6 +83,51 @@ impl<'a> From<CellData<'a>> for Data {
     }
 }
 
+/// Recipe for an Excel "Data → What-If Analysis → Data Table" sensitivity grid.
+///
+/// Emitted on the table's top-left body cell — the only cell that carries the
+/// `<f t="dataTable" .../>` element. `range` (the xlsx `ref`) spans the whole
+/// body region; `kind` distinguishes one- and two-variable tables. Deleted
+/// inputs (`del1`/`del2`) decode as `None`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DataTableFormula {
+    /// Body region of the table — from xlsx `<f ref="...">`. 0-indexed (row, col) pairs.
+    pub range: Dimensions,
+    /// One- vs two-variable shape, with the input cell(s) for each.
+    pub kind: DataTableKind,
+}
+
+/// Whether a [`DataTableFormula`] varies one input or two, with the relevant cells.
+///
+/// The variant is chosen by presence of the xlsx `r2` attribute — canonical, not
+/// from the `dt2D` attribute, which non-Excel writers may suppress.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DataTableKind {
+    /// One-variable table: a single input cell substituted along one axis.
+    OneVariable {
+        /// Input cell (xlsx `r1`). `None` if `del1="1"` or attribute absent.
+        input: Option<(u32, u32)>,
+        /// Axis the substitution runs along (xlsx `dtr`).
+        orientation: DataTableOrientation,
+    },
+    /// Two-variable table: `r2` was present, so two input cells are substituted.
+    TwoVariable {
+        /// Row input cell (xlsx `r1`). `None` if `del1="1"`.
+        row_input: Option<(u32, u32)>,
+        /// Column input cell (xlsx `r2`). `None` if `del2="1"`.
+        col_input: Option<(u32, u32)>,
+    },
+}
+
+/// Axis a one-variable [`DataTableKind::OneVariable`] table substitutes along (xlsx `dtr`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DataTableOrientation {
+    /// `dtr="1"` — output is a row; inputs sit above the body.
+    Row,
+    /// `dtr` absent/`"0"` — output is a column; inputs sit left of the body.
+    Column,
+}
+
 /// Formula information returned by full XLSX cell streaming.
 #[derive(Debug, Clone, PartialEq)]
 pub enum CellFormula {
@@ -89,6 +135,10 @@ pub enum CellFormula {
     Text(String),
     /// Shared formula child that refers to a previously emitted parent cell.
     Shared { parent: (u32, u32) },
+    /// "Data → What-If Analysis → Data Table" body. Carried on the table's
+    /// top-left body cell; `range` spans the whole body. Boxed to keep the
+    /// common `Text`/`Shared` cells small (this variant is rare — one per table).
+    DataTable(Box<DataTableFormula>),
 }
 
 /// Value and formula information returned by full XLSX cell streaming.

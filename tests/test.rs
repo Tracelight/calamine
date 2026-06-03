@@ -5,9 +5,10 @@
 use calamine::vba::Reference;
 use calamine::Data::{Bool, DateTime, DateTimeIso, DurationIso, Empty, Error, Float, Int, String};
 use calamine::{
-    open_workbook, open_workbook_auto, BorderStyle, Color, DataRef, DataType, Dimensions,
-    ExcelDateTime, ExcelDateTimeType, HeaderRow, HorizontalAlignment, Ods, Range, Reader,
-    ReaderRef, Sheet, SheetType, SheetVisible, UnderlineStyle, VerticalAlignment, Xls, Xlsb, Xlsx,
+    open_workbook, open_workbook_auto, BorderStyle, CellFormula, Color, DataRef, DataTableFormula,
+    DataTableKind, DataTableOrientation, DataType, Dimensions, ExcelDateTime, ExcelDateTimeType,
+    HeaderRow, HorizontalAlignment, Ods, Range, Reader, ReaderRef, Sheet, SheetType, SheetVisible,
+    UnderlineStyle, VerticalAlignment, WorksheetItem, Xls, Xlsb, Xlsx,
 };
 use calamine::{CellErrorType::*, Data};
 use rstest::rstest;
@@ -2886,5 +2887,160 @@ fn test_color_parsing_with_styles() {
     assert!(
         cells_with_font_colors > 0,
         "Should find at least some cells with font colors"
+    );
+}
+
+// Data-table fixtures (dt_*.xlsx): each a single Sheet1 holding one canonical "Data → What-If
+// Analysis → Data Table" shape. To regenerate: set up inputs/headers/master → Data →
+// What-If Analysis → Data Table → save → unzip → grep `dataTable` in
+// xl/worksheets/sheet1.xml. Excel always emits dtr="1" when dt2D="1" (a no-op carrier
+// for 2-var tables), so the TwoVariable variant is derived from r2 presence, not dt2D.
+
+/// Collect every data-table recipe surfaced by the unified worksheet item stream,
+/// paired with the (row, col) of the body corner cell that carried the `<f t="dataTable">`.
+fn data_tables_via_items(file: &str, sheet: &str) -> Vec<((u32, u32), DataTableFormula)> {
+    let mut xlsx: Xlsx<_> = wb(file);
+    let mut reader = xlsx.worksheet_items_reader(sheet).unwrap();
+    let mut out = Vec::new();
+    while let Some(item) = reader.next_item().unwrap() {
+        if let WorksheetItem::Cell(cell) = item {
+            if let Some(CellFormula::DataTable(dt)) = &cell.get_value().formula {
+                out.push((cell.get_position(), (**dt).clone()));
+            }
+        }
+    }
+    out
+}
+
+/// dt_2var.xlsx: `<f t="dataTable" ref="E5:F6" dt2D="1" dtr="1" r1="B1" r2="B2"/>`
+#[test]
+fn data_table_2var() {
+    let tables = data_tables_via_items("dt_2var.xlsx", "Sheet1");
+    assert_eq!(
+        tables,
+        vec![(
+            (4, 4),
+            DataTableFormula {
+                range: Dimensions {
+                    start: (4, 4),
+                    end: (5, 5),
+                },
+                kind: DataTableKind::TwoVariable {
+                    row_input: Some((0, 1)),
+                    col_input: Some((1, 1)),
+                },
+            }
+        )]
+    );
+}
+
+/// dt_1var_row.xlsx: `<f t="dataTable" ref="E5:G5" dt2D="0" dtr="1" r1="B1"/>`
+#[test]
+fn data_table_1var_row() {
+    let tables = data_tables_via_items("dt_1var_row.xlsx", "Sheet1");
+    assert_eq!(
+        tables,
+        vec![(
+            (4, 4),
+            DataTableFormula {
+                range: Dimensions {
+                    start: (4, 4),
+                    end: (4, 6),
+                },
+                kind: DataTableKind::OneVariable {
+                    input: Some((0, 1)),
+                    orientation: DataTableOrientation::Row,
+                },
+            }
+        )]
+    );
+}
+
+/// dt_1var_col.xlsx: `<f t="dataTable" ref="D5:D7" dt2D="0" dtr="0" r1="B1"/>`
+#[test]
+fn data_table_1var_col() {
+    let tables = data_tables_via_items("dt_1var_col.xlsx", "Sheet1");
+    assert_eq!(
+        tables,
+        vec![(
+            (4, 3),
+            DataTableFormula {
+                range: Dimensions {
+                    start: (4, 3),
+                    end: (6, 3),
+                },
+                kind: DataTableKind::OneVariable {
+                    input: Some((0, 1)),
+                    orientation: DataTableOrientation::Column,
+                },
+            }
+        )]
+    );
+}
+
+/// dt_2var_del.xlsx: `<f t="dataTable" ref="E5:F6" dt2D="1" dtr="1" del1="1" r1="B1" r2="B2"/>`
+#[test]
+fn data_table_2var_del1() {
+    let tables = data_tables_via_items("dt_2var_del.xlsx", "Sheet1");
+    assert_eq!(
+        tables,
+        vec![(
+            (4, 4),
+            DataTableFormula {
+                range: Dimensions {
+                    start: (4, 4),
+                    end: (5, 5),
+                },
+                kind: DataTableKind::TwoVariable {
+                    row_input: None,
+                    col_input: Some((1, 1)),
+                },
+            }
+        )]
+    );
+}
+
+/// dt_2var_del2.xlsx: `<f t="dataTable" ref="E5:F6" dt2D="1" dtr="1" del2="1" r1="B1" r2="B2"/>`
+#[test]
+fn data_table_2var_del2() {
+    let tables = data_tables_via_items("dt_2var_del2.xlsx", "Sheet1");
+    assert_eq!(
+        tables,
+        vec![(
+            (4, 4),
+            DataTableFormula {
+                range: Dimensions {
+                    start: (4, 4),
+                    end: (5, 5),
+                },
+                kind: DataTableKind::TwoVariable {
+                    row_input: Some((0, 1)),
+                    col_input: None,
+                },
+            }
+        )]
+    );
+}
+
+/// The body corner cell carries both the data-table recipe AND its cached `<v>`
+/// value — surfacing the formula must not drop the value (it is read separately
+/// from the `<v>` sibling). This is what lets a consumer stop treating the
+/// cached value as a hardcoded number.
+#[test]
+fn data_table_preserves_cached_value() {
+    let mut xlsx: Xlsx<_> = wb("dt_2var.xlsx");
+    let mut reader = xlsx.worksheet_items_reader("Sheet1").unwrap();
+    let mut corner = None;
+    while let Some(item) = reader.next_item().unwrap() {
+        if let WorksheetItem::Cell(cell) = item {
+            if matches!(&cell.get_value().formula, Some(CellFormula::DataTable(_))) {
+                corner = Some(!matches!(cell.get_value().value, DataRef::Empty));
+            }
+        }
+    }
+    assert_eq!(
+        corner,
+        Some(true),
+        "corner cell cached value should be preserved"
     );
 }
