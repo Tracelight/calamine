@@ -3120,26 +3120,22 @@ fn test_worksheet_charts_anchors() {
     assert!(wb.worksheet_charts("DoesNotExist").is_empty());
 }
 
-// Captures the *current* (buggy) behaviour of the chart parser when chart text fields
-// contain XML entity references (`&amp;`, `&lt;`, `&gt;`, ...). The chart parser only
-// handles `Event::Text` and ignores the `Event::GeneralRef` events that quick_xml emits
-// for entity references, so the entity content is silently dropped. The chart `name`
-// attribute also goes through `decoder.decode` instead of `decode_and_unescape_value`,
-// so it keeps the raw `&amp;` etc.
+// Snapshot test for the chart parser's handling of XML entity references in chart text
+// fields: `<xdr:cNvPr name>` attributes, chart titles (`<a:t>`), series names
+// (`<c:tx><c:v>`), and formula refs (`<c:f>`). quick_xml emits entity references like
+// `&amp;` as separate `Event::GeneralRef` events between two `Event::Text` events, so a
+// parser that only consumes `Event::Text` silently drops the entity. The fix routes
+// `GeneralRef` into the active text buffer via `unescape_entity_to_buffer`, and decodes
+// the `cNvPr name` attribute with `decode_and_unescape_value` instead of `decode`.
 //
 // Fixture: `Hello & World` data sheet + `Dashboard` sheet hosting one chart with title
-// `Profit & Loss <2026>`, series name `Net & Gross`, and refs into 'Hello & World'.
-// A follow-up commit fixes the parser and updates these expectations to the literal
-// (entity-decoded) values.
+// `Profit & Loss <2026>`, series name `Net & Gross`, refs into 'Hello & World'.
 #[test]
 fn test_worksheet_charts_xml_entity_handling() {
     use calamine::{Chart, ChartAnchor, ChartSeries};
 
     let mut wb: Xlsx<_> = wb("chart_with_escaping.xlsx");
 
-    // Sheet names go through `decode_and_unescape_value` in workbook.xml parsing, so
-    // they round-trip correctly — this is the control that proves entities exist in
-    // the file at all.
     assert_eq!(
         wb.sheet_names(),
         vec!["Hello & World".to_string(), "Dashboard".to_string()],
@@ -3150,13 +3146,8 @@ fn test_worksheet_charts_xml_entity_handling() {
         charts,
         vec![Chart {
             id: Some("{A8E16AA9-EED6-CB84-83F6-E721FCAD769C}".into()),
-            // `<xdr:cNvPr name>` attribute, currently decoded without entity unescape.
-            name: Some(
-                "tracelight-6acee5d2a847457bprofit-&amp;-loss-&lt;2026>".into(),
-            ),
-            // `<a:t>` text: "Profit &amp; Loss &lt;2026&gt;" loses the three entity
-            // GeneralRefs, leaving the literal Text fragments concatenated.
-            title: Some("Profit  Loss 2026".into()),
+            name: Some("tracelight-6acee5d2a847457bprofit-&-loss-<2026>".into(),),
+            title: Some("Profit & Loss <2026>".into()),
             chart_type: Some("barChart".into()),
             anchor: Some(ChartAnchor::TwoCell {
                 from_col: 1,
@@ -3165,12 +3156,9 @@ fn test_worksheet_charts_xml_entity_handling() {
                 to_row: 18,
             }),
             series: vec![ChartSeries {
-                // `<c:tx><c:v>Net &amp; Gross</c:v>`
-                name: Some("Net  Gross".into()),
-                // `<c:cat>...<c:f>'Hello &amp; World'!$A$2:$A$5</c:f>`
-                categories_ref: Some("'Hello  World'!$A$2:$A$5".into()),
-                // `<c:val>...<c:f>'Hello &amp; World'!$B$2:$B$5</c:f>`
-                values_ref: Some("'Hello  World'!$B$2:$B$5".into()),
+                name: Some("Net & Gross".into()),
+                categories_ref: Some("'Hello & World'!$A$2:$A$5".into()),
+                values_ref: Some("'Hello & World'!$B$2:$B$5".into()),
                 x_values_ref: None,
                 y_values_ref: None,
             }],

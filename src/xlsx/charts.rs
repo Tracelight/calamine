@@ -17,6 +17,7 @@ use quick_xml::name::QName;
 use zip::read::ZipArchive;
 
 use super::xml_reader;
+use crate::utils::unescape_entity_to_buffer;
 
 /// A data series within a chart. References point at the source data as raw A1 formulas
 /// (e.g. `Sheet1!$A$2:$A$7`), exactly as stored in the chart XML.
@@ -396,7 +397,7 @@ fn read_drawing_frames<RS: Read + Seek>(
                     b"cNvPr" if in_graphic_frame => {
                         for a in e.attributes().flatten() {
                             if a.key == QName(b"name") {
-                                if let Ok(v) = decoder.decode(&a.value) {
+                                if let Ok(v) = a.decode_and_unescape_value(decoder) {
                                     frame_name = Some(v.into_owned());
                                 }
                             }
@@ -641,7 +642,6 @@ fn parse_chart_part<RS: Read + Seek>(zip: &mut ZipArchive<RS>, chart_path: &str)
         buf.clear();
         let event = xml.read_event_into(&mut buf);
         let is_start = matches!(&event, Ok(Event::Start(_)));
-        let decoder = xml.decoder();
         match event {
             Ok(Event::Start(e) | Event::Empty(e)) => {
                 let name = e.local_name();
@@ -693,7 +693,7 @@ fn parse_chart_part<RS: Read + Seek>(zip: &mut ZipArchive<RS>, chart_path: &str)
                 }
             }
             Ok(Event::Text(t)) => {
-                let s = match decoder.decode(&t) {
+                let s = match t.xml10_content() {
                     Ok(v) => v,
                     Err(_) => continue,
                 };
@@ -705,6 +705,17 @@ fn parse_chart_part<RS: Read + Seek>(zip: &mut ZipArchive<RS>, chart_path: &str)
                 }
                 if in_ref_f {
                     ref_text_buf.push_str(&s);
+                }
+            }
+            Ok(Event::GeneralRef(e)) => {
+                if in_a_t {
+                    let _ = unescape_entity_to_buffer(&e, &mut title_buf);
+                }
+                if in_ser_tx_v {
+                    let _ = unescape_entity_to_buffer(&e, &mut ser_name_buf);
+                }
+                if in_ref_f {
+                    let _ = unescape_entity_to_buffer(&e, &mut ref_text_buf);
                 }
             }
             Ok(Event::End(e)) => {
