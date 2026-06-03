@@ -6,9 +6,9 @@ use calamine::vba::Reference;
 use calamine::Data::{Bool, DateTime, DateTimeIso, DurationIso, Empty, Error, Float, Int, String};
 use calamine::{
     open_workbook, open_workbook_auto, BorderStyle, CellFormula, Color, DataRef, DataTableFormula,
-    DataType, Dimensions, ExcelDateTime, ExcelDateTimeType, HeaderRow, HorizontalAlignment, Ods,
-    Range, Reader, ReaderRef, Sheet, SheetType, SheetVisible, UnderlineStyle, VerticalAlignment,
-    WorksheetItem, Xls, Xlsb, Xlsx,
+    DataTableKind, DataTableOrientation, DataType, Dimensions, ExcelDateTime, ExcelDateTimeType,
+    HeaderRow, HorizontalAlignment, Ods, Range, Reader, ReaderRef, Sheet, SheetType, SheetVisible,
+    UnderlineStyle, VerticalAlignment, WorksheetItem, Xls, Xlsb, Xlsx,
 };
 use calamine::{CellErrorType::*, Data};
 use rstest::rstest;
@@ -2894,7 +2894,7 @@ fn test_color_parsing_with_styles() {
 // Analysis → Data Table" shape. To regenerate: set up inputs/headers/master → Data →
 // What-If Analysis → Data Table → save → unzip → grep `dataTable` in
 // xl/worksheets/sheet1.xml. Excel always emits dtr="1" when dt2D="1" (a no-op carrier
-// for 2-var tables), so two_dimensional is derived from r2 presence, not dt2D.
+// for 2-var tables), so the TwoVariable variant is derived from r2 presence, not dt2D.
 
 /// Collect every data-table recipe surfaced by the unified worksheet item stream,
 /// paired with the (row, col) of the body corner cell that carried the `<f t="dataTable">`.
@@ -2916,65 +2916,110 @@ fn data_tables_via_items(file: &str, sheet: &str) -> Vec<((u32, u32), DataTableF
 #[test]
 fn data_table_2var() {
     let tables = data_tables_via_items("dt_2var.xlsx", "Sheet1");
-    assert_eq!(tables.len(), 1);
-    let (pos, dt) = &tables[0];
-    assert_eq!(*pos, (4, 4));
     assert_eq!(
-        dt.range,
-        Dimensions {
-            start: (4, 4),
-            end: (5, 5)
-        }
+        tables,
+        vec![(
+            (4, 4),
+            DataTableFormula {
+                range: Dimensions {
+                    start: (4, 4),
+                    end: (5, 5),
+                },
+                kind: DataTableKind::TwoVariable {
+                    row_input: Some((0, 1)),
+                    col_input: Some((1, 1)),
+                },
+            }
+        )]
     );
-    assert!(dt.two_dimensional);
-    assert_eq!(dt.r1, Some((0, 1)));
-    assert_eq!(dt.r2, Some((1, 1)));
 }
 
 /// dt_1var_row.xlsx: `<f t="dataTable" ref="E5:G5" dt2D="0" dtr="1" r1="B1"/>`
 #[test]
 fn data_table_1var_row() {
     let tables = data_tables_via_items("dt_1var_row.xlsx", "Sheet1");
-    assert_eq!(tables.len(), 1);
-    let (_, dt) = &tables[0];
-    assert!(!dt.two_dimensional);
-    assert!(dt.row_oriented);
-    assert_eq!(dt.r1, Some((0, 1)));
-    assert_eq!(dt.r2, None);
+    assert_eq!(
+        tables,
+        vec![(
+            (4, 4),
+            DataTableFormula {
+                range: Dimensions {
+                    start: (4, 4),
+                    end: (4, 6),
+                },
+                kind: DataTableKind::OneVariable {
+                    input: Some((0, 1)),
+                    orientation: DataTableOrientation::Row,
+                },
+            }
+        )]
+    );
 }
 
 /// dt_1var_col.xlsx: `<f t="dataTable" ref="D5:D7" dt2D="0" dtr="0" r1="B1"/>`
 #[test]
 fn data_table_1var_col() {
     let tables = data_tables_via_items("dt_1var_col.xlsx", "Sheet1");
-    assert_eq!(tables.len(), 1);
-    let (_, dt) = &tables[0];
-    assert!(!dt.two_dimensional);
-    assert!(!dt.row_oriented);
-    assert_eq!(dt.r1, Some((0, 1)));
-    assert_eq!(dt.r2, None);
+    assert_eq!(
+        tables,
+        vec![(
+            (4, 3),
+            DataTableFormula {
+                range: Dimensions {
+                    start: (4, 3),
+                    end: (6, 3),
+                },
+                kind: DataTableKind::OneVariable {
+                    input: Some((0, 1)),
+                    orientation: DataTableOrientation::Column,
+                },
+            }
+        )]
+    );
 }
 
 /// dt_2var_del.xlsx: `<f t="dataTable" ref="E5:F6" dt2D="1" dtr="1" del1="1" r1="B1" r2="B2"/>`
 #[test]
 fn data_table_2var_del1() {
     let tables = data_tables_via_items("dt_2var_del.xlsx", "Sheet1");
-    assert_eq!(tables.len(), 1);
-    let (_, dt) = &tables[0];
-    assert!(dt.two_dimensional);
-    assert_eq!(dt.r1, None);
-    assert!(dt.r2.is_some());
+    assert_eq!(
+        tables,
+        vec![(
+            (4, 4),
+            DataTableFormula {
+                range: Dimensions {
+                    start: (4, 4),
+                    end: (5, 5),
+                },
+                kind: DataTableKind::TwoVariable {
+                    row_input: None,
+                    col_input: Some((1, 1)),
+                },
+            }
+        )]
+    );
 }
 
 /// dt_2var_del2.xlsx: `<f t="dataTable" ref="E5:F6" dt2D="1" dtr="1" del2="1" r1="B1" r2="B2"/>`
 #[test]
 fn data_table_2var_del2() {
     let tables = data_tables_via_items("dt_2var_del2.xlsx", "Sheet1");
-    assert_eq!(tables.len(), 1);
-    let (_, dt) = &tables[0];
-    assert!(dt.two_dimensional);
-    assert!(dt.r1.is_some());
-    assert_eq!(dt.r2, None);
+    assert_eq!(
+        tables,
+        vec![(
+            (4, 4),
+            DataTableFormula {
+                range: Dimensions {
+                    start: (4, 4),
+                    end: (5, 5),
+                },
+                kind: DataTableKind::TwoVariable {
+                    row_input: Some((0, 1)),
+                    col_input: None,
+                },
+            }
+        )]
+    );
 }
 
 /// The body corner cell carries both the data-table recipe AND its cached `<v>`
