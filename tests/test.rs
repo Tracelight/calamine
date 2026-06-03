@@ -3044,3 +3044,124 @@ fn data_table_preserves_cached_value() {
         "corner cell cached value should be preserved"
     );
 }
+
+#[test]
+fn test_worksheet_charts_anchors() {
+    use calamine::{Chart, ChartAnchor, ChartSeries};
+
+    let mut wb: Xlsx<_> = wb("chart_anchors.xlsx");
+
+    assert_eq!(wb.sheet_names(), vec!["Sheet1"]);
+
+    let charts = wb.worksheet_charts("Sheet1");
+    assert_eq!(
+        charts,
+        vec![
+            Chart {
+                id: Some("{C763C1C0-5A7F-C41B-F64F-D22BE9B9CAD9}".into()),
+                name: Some("TwoCellChart".into()),
+                title: Some("Two-Cell Anchor (move + size)".into()),
+                chart_type: Some("barChart".into()),
+                anchor: Some(ChartAnchor::TwoCell {
+                    from_col: 3,
+                    from_row: 0,
+                    to_col: 11,
+                    to_row: 15,
+                }),
+                series: vec![ChartSeries {
+                    name: Some("Value".into()),
+                    categories_ref: Some("Sheet1!$A$2:$A$6".into()),
+                    values_ref: Some("Sheet1!$B$2:$B$6".into()),
+                    x_values_ref: None,
+                    y_values_ref: None,
+                }],
+            },
+            Chart {
+                id: Some("{1C1C1088-488F-D327-7904-FC19D85882F0}".into()),
+                name: Some("OneCellChart".into()),
+                title: Some("One-Cell Anchor (move only)".into()),
+                chart_type: Some("barChart".into()),
+                anchor: Some(ChartAnchor::OneCell {
+                    from_col: 3,
+                    from_row: 16,
+                    ext_cx_emu: 6_604_000,
+                    ext_cy_emu: 3_048_000,
+                }),
+                series: vec![ChartSeries {
+                    name: Some("Value".into()),
+                    categories_ref: Some("Sheet1!$A$2:$A$6".into()),
+                    values_ref: Some("Sheet1!$B$2:$B$6".into()),
+                    x_values_ref: None,
+                    y_values_ref: None,
+                }],
+            },
+            Chart {
+                id: Some("{74D5C176-DE85-5BF1-C6BE-F66B60ED9242}".into()),
+                name: Some("AbsoluteChart".into()),
+                title: Some("Absolute Anchor (frozen)".into()),
+                chart_type: Some("barChart".into()),
+                anchor: Some(ChartAnchor::Absolute {
+                    pos_x_emu: 8_890_000,
+                    pos_y_emu: 635_000,
+                    ext_cx_emu: 5_080_000,
+                    ext_cy_emu: 3_302_000,
+                }),
+                series: vec![ChartSeries {
+                    name: Some("Value".into()),
+                    categories_ref: Some("Sheet1!$A$2:$A$6".into()),
+                    values_ref: Some("Sheet1!$B$2:$B$6".into()),
+                    x_values_ref: None,
+                    y_values_ref: None,
+                }],
+            },
+        ]
+    );
+
+    assert!(wb.worksheet_charts("DoesNotExist").is_empty());
+}
+
+// Snapshot test for the chart parser's handling of XML entity references in chart text
+// fields: `<xdr:cNvPr name>` attributes, chart titles (`<a:t>`), series names
+// (`<c:tx><c:v>`), and formula refs (`<c:f>`). quick_xml emits entity references like
+// `&amp;` as separate `Event::GeneralRef` events between two `Event::Text` events, so a
+// parser that only consumes `Event::Text` silently drops the entity. The fix routes
+// `GeneralRef` into the active text buffer via `unescape_entity_to_buffer`, and decodes
+// the `cNvPr name` attribute with `decode_and_unescape_value` instead of `decode`.
+//
+// Fixture: `Hello & World` data sheet + `Dashboard` sheet hosting one chart with title
+// `Profit & Loss <2026>`, series name `Net & Gross`, refs into 'Hello & World'.
+#[test]
+fn test_worksheet_charts_xml_entity_handling() {
+    use calamine::{Chart, ChartAnchor, ChartSeries};
+
+    let mut wb: Xlsx<_> = wb("chart_with_escaping.xlsx");
+
+    assert_eq!(
+        wb.sheet_names(),
+        vec!["Hello & World".to_string(), "Dashboard".to_string()],
+    );
+
+    let charts = wb.worksheet_charts("Dashboard");
+    assert_eq!(
+        charts,
+        vec![Chart {
+            id: Some("{A8E16AA9-EED6-CB84-83F6-E721FCAD769C}".into()),
+            name: Some("tracelight-6acee5d2a847457bprofit-&-loss-<2026>".into(),),
+            title: Some("Profit & Loss <2026>".into()),
+            chart_type: Some("barChart".into()),
+            anchor: Some(ChartAnchor::TwoCell {
+                from_col: 1,
+                from_row: 1,
+                to_col: 10,
+                to_row: 18,
+            }),
+            series: vec![ChartSeries {
+                name: Some("Net & Gross".into()),
+                categories_ref: Some("'Hello & World'!$A$2:$A$5".into()),
+                values_ref: Some("'Hello & World'!$B$2:$B$5".into()),
+                x_values_ref: None,
+                y_values_ref: None,
+            }],
+        }]
+    );
+}

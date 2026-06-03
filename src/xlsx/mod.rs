@@ -5,6 +5,7 @@
 #![warn(missing_docs)]
 
 mod cells_reader;
+mod charts;
 mod comments;
 mod style_parser;
 mod theme;
@@ -39,6 +40,7 @@ use crate::{
     SheetType, SheetVisible, Style, Table,
 };
 pub use cells_reader::{WorksheetItem, XlsxCellReader, XlsxWorksheetItemReader};
+pub use charts::{Chart, ChartAnchor, ChartSeries};
 pub use comments::{
     Comment, LegacyCommentsMap, Person, PersonsMap, RichTextRun, ThreadedComment,
     ThreadedCommentsMap,
@@ -2637,6 +2639,32 @@ impl<RS: Read + Seek> Xlsx<RS> {
 
         let layout = layout.with_sheet_settings(sheet_settings);
         Ok(layout)
+    }
+
+    /// Parse the charts anchored on a worksheet from its drawing and chart parts.
+    ///
+    /// Returns the raw OOXML fields (chart-type wrapper tag, series formula references,
+    /// anchor cells) without interpreting them. Best-effort: missing sheets and
+    /// unreadable or malformed parts yield an empty result rather than an error.
+    ///
+    /// # Parameters
+    ///
+    /// - `name`: The worksheet name as listed in [`Reader::sheet_names`].
+    ///
+    pub fn worksheet_charts(&mut self, name: &str) -> Vec<Chart> {
+        let Some(sheet_path) = self.worksheet_xml_path(name).map(str::to_string) else {
+            return Vec::new();
+        };
+        charts::read_charts_for_sheet(&mut self.zip, &sheet_path)
+    }
+
+    /// The xlsx-relative XML path for a worksheet (e.g. `xl/worksheets/sheet1.xml`),
+    /// resolved from `xl/_rels/workbook.xml.rels`. `None` if no such sheet exists.
+    fn worksheet_xml_path(&self, name: &str) -> Option<&str> {
+        self.sheets
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, path)| path.as_str())
     }
 
     /// Get all worksheets in the workbook.
