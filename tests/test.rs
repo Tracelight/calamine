@@ -3062,7 +3062,7 @@ fn test_worksheet_charts_anchors() {
                 name: Some("TwoCellChart".into()),
                 title: Some("Two-Cell Anchor (move + size)".into()),
                 chart_type: Some("barChart".into()),
-                anchor: Some(ChartAnchor {
+                anchor: Some(ChartAnchor::TwoCell {
                     from_col: 3,
                     from_row: 0,
                     to_col: 11,
@@ -3081,7 +3081,12 @@ fn test_worksheet_charts_anchors() {
                 name: Some("OneCellChart".into()),
                 title: Some("One-Cell Anchor (move only)".into()),
                 chart_type: Some("barChart".into()),
-                anchor: None,
+                anchor: Some(ChartAnchor::OneCell {
+                    from_col: 3,
+                    from_row: 16,
+                    ext_cx_emu: 6_604_000,
+                    ext_cy_emu: 3_048_000,
+                }),
                 series: vec![ChartSeries {
                     name: Some("Value".into()),
                     categories_ref: Some("Sheet1!$A$2:$A$6".into()),
@@ -3095,7 +3100,12 @@ fn test_worksheet_charts_anchors() {
                 name: Some("AbsoluteChart".into()),
                 title: Some("Absolute Anchor (frozen)".into()),
                 chart_type: Some("barChart".into()),
-                anchor: None,
+                anchor: Some(ChartAnchor::Absolute {
+                    pos_x_emu: 8_890_000,
+                    pos_y_emu: 635_000,
+                    ext_cx_emu: 5_080_000,
+                    ext_cy_emu: 3_302_000,
+                }),
                 series: vec![ChartSeries {
                     name: Some("Value".into()),
                     categories_ref: Some("Sheet1!$A$2:$A$6".into()),

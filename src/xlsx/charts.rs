@@ -34,18 +34,47 @@ pub struct ChartSeries {
     pub y_values_ref: Option<String>,
 }
 
-/// The cell rectangle a chart is anchored to, as raw 0-indexed drawingML `from`/`to`
-/// column/row coordinates.
+/// How a chart is placed on a worksheet. DrawingML defines three anchor flavors and
+/// the variant preserves which one the file uses, with the raw coordinates as stored.
+///
+/// EMU = English Metric Units (1 cm = 360_000 EMU, 1 in = 914_400 EMU); signed because
+/// DrawingML permits negative offsets and positions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ChartAnchor {
-    /// 0-indexed column of the top-left anchor cell.
-    pub from_col: u32,
-    /// 0-indexed row of the top-left anchor cell.
-    pub from_row: u32,
-    /// 0-indexed column of the bottom-right anchor cell.
-    pub to_col: u32,
-    /// 0-indexed row of the bottom-right anchor cell.
-    pub to_row: u32,
+pub enum ChartAnchor {
+    /// `<xdr:twoCellAnchor>` — both corners pinned to cells. 0-indexed.
+    TwoCell {
+        /// 0-indexed column of the top-left anchor cell.
+        from_col: u32,
+        /// 0-indexed row of the top-left anchor cell.
+        from_row: u32,
+        /// 0-indexed column of the bottom-right anchor cell.
+        to_col: u32,
+        /// 0-indexed row of the bottom-right anchor cell.
+        to_row: u32,
+    },
+    /// `<xdr:oneCellAnchor>` — top-left pinned to a cell (0-indexed); size given as
+    /// `<xdr:ext cx cy>` in EMUs.
+    OneCell {
+        /// 0-indexed column of the top-left anchor cell.
+        from_col: u32,
+        /// 0-indexed row of the top-left anchor cell.
+        from_row: u32,
+        /// Width in EMUs (`<xdr:ext cx>`).
+        ext_cx_emu: i64,
+        /// Height in EMUs (`<xdr:ext cy>`).
+        ext_cy_emu: i64,
+    },
+    /// `<xdr:absoluteAnchor>` — position and size both given in EMUs; no cell anchoring.
+    Absolute {
+        /// Horizontal position in EMUs (`<xdr:pos x>`).
+        pos_x_emu: i64,
+        /// Vertical position in EMUs (`<xdr:pos y>`).
+        pos_y_emu: i64,
+        /// Width in EMUs (`<xdr:ext cx>`).
+        ext_cx_emu: i64,
+        /// Height in EMUs (`<xdr:ext cy>`).
+        ext_cy_emu: i64,
+    },
 }
 
 /// A chart anchored on a worksheet.
@@ -61,7 +90,8 @@ pub struct Chart {
     pub title: Option<String>,
     /// Raw chart-type wrapper tag, e.g. `"barChart"`, `"lineChart"`, `"scatterChart"`.
     pub chart_type: Option<String>,
-    /// Anchor cell rectangle, if the chart uses a `twoCellAnchor`.
+    /// Placement on the worksheet, when parsable. Carries which DrawingML anchor flavor
+    /// was used. `None` if the anchor is malformed or missing required coordinates.
     pub anchor: Option<ChartAnchor>,
     /// Data series.
     pub series: Vec<ChartSeries>,
@@ -261,6 +291,13 @@ enum TextTarget {
     Row,
 }
 
+#[derive(Debug, Copy, Clone)]
+enum AnchorKind {
+    TwoCell,
+    OneCell,
+    Absolute,
+}
+
 fn read_drawing_frames<RS: Read + Seek>(
     zip: &mut ZipArchive<RS>,
     drawing_path: &str,
@@ -276,9 +313,11 @@ fn read_drawing_frames<RS: Read + Seek>(
     let mut frames = Vec::new();
     let mut buf = Vec::with_capacity(1024);
 
-    let mut in_two_cell_anchor = false;
+    let mut current_anchor: Option<AnchorKind> = None;
     let mut anchor_from: Option<(u32, u32)> = None;
     let mut anchor_to: Option<(u32, u32)> = None;
+    let mut anchor_pos_emu: Option<(i64, i64)> = None;
+    let mut anchor_ext_emu: Option<(i64, i64)> = None;
     let mut in_from = false;
     let mut in_to = false;
     let mut pending_col: Option<u32> = None;
@@ -303,16 +342,32 @@ fn read_drawing_frames<RS: Read + Seek>(
                 let n = name.as_ref();
                 match n {
                     b"twoCellAnchor" if is_start => {
-                        in_two_cell_anchor = true;
+                        current_anchor = Some(AnchorKind::TwoCell);
                         anchor_from = None;
                         anchor_to = None;
+                        anchor_pos_emu = None;
+                        anchor_ext_emu = None;
                     }
-                    b"from" if is_start && in_two_cell_anchor => {
+                    b"oneCellAnchor" if is_start => {
+                        current_anchor = Some(AnchorKind::OneCell);
+                        anchor_from = None;
+                        anchor_to = None;
+                        anchor_pos_emu = None;
+                        anchor_ext_emu = None;
+                    }
+                    b"absoluteAnchor" if is_start => {
+                        current_anchor = Some(AnchorKind::Absolute);
+                        anchor_from = None;
+                        anchor_to = None;
+                        anchor_pos_emu = None;
+                        anchor_ext_emu = None;
+                    }
+                    b"from" if is_start && current_anchor.is_some() => {
                         in_from = true;
                         pending_col = None;
                         pending_row = None;
                     }
-                    b"to" if is_start && in_two_cell_anchor => {
+                    b"to" if is_start && current_anchor.is_some() => {
                         in_to = true;
                         pending_col = None;
                         pending_row = None;
@@ -324,6 +379,12 @@ fn read_drawing_frames<RS: Read + Seek>(
                     b"row" if is_start && (in_from || in_to) => {
                         text_target = Some(TextTarget::Row);
                         text_buf.clear();
+                    }
+                    b"pos" if current_anchor.is_some() && !in_graphic_frame => {
+                        anchor_pos_emu = parse_xy_emu(&e, decoder, b"x", b"y");
+                    }
+                    b"ext" if current_anchor.is_some() && !in_graphic_frame => {
+                        anchor_ext_emu = parse_xy_emu(&e, decoder, b"cx", b"cy");
                     }
                     b"graphicFrame" if is_start => {
                         in_graphic_frame = true;
@@ -407,15 +468,13 @@ fn read_drawing_frames<RS: Read + Seek>(
                     pending_row = None;
                 } else if n == b"graphicFrame" && in_graphic_frame {
                     if frame_has_chart {
-                        let anchor = match (anchor_from, anchor_to) {
-                            (Some((fc, fr)), Some((tc, tr))) => Some(ChartAnchor {
-                                from_col: fc,
-                                from_row: fr,
-                                to_col: tc,
-                                to_row: tr,
-                            }),
-                            _ => None,
-                        };
+                        let anchor = build_anchor(
+                            current_anchor,
+                            anchor_from,
+                            anchor_to,
+                            anchor_pos_emu,
+                            anchor_ext_emu,
+                        );
                         frames.push(DrawingFrame {
                             creation_id: frame_creation_id.take(),
                             name: frame_name.take(),
@@ -428,10 +487,14 @@ fn read_drawing_frames<RS: Read + Seek>(
                     frame_has_chart = false;
                     frame_creation_id = None;
                     frame_chart_rid = None;
-                } else if n == b"twoCellAnchor" && in_two_cell_anchor {
-                    in_two_cell_anchor = false;
+                } else if (n == b"twoCellAnchor" || n == b"oneCellAnchor" || n == b"absoluteAnchor")
+                    && current_anchor.is_some()
+                {
+                    current_anchor = None;
                     anchor_from = None;
                     anchor_to = None;
+                    anchor_pos_emu = None;
+                    anchor_ext_emu = None;
                 }
             }
             Ok(Event::Eof) => break,
@@ -444,6 +507,75 @@ fn read_drawing_frames<RS: Read + Seek>(
     }
 
     frames
+}
+
+fn build_anchor(
+    kind: Option<AnchorKind>,
+    from: Option<(u32, u32)>,
+    to: Option<(u32, u32)>,
+    pos: Option<(i64, i64)>,
+    ext: Option<(i64, i64)>,
+) -> Option<ChartAnchor> {
+    match kind? {
+        AnchorKind::TwoCell => {
+            let (fc, fr) = from?;
+            let (tc, tr) = to?;
+            Some(ChartAnchor::TwoCell {
+                from_col: fc,
+                from_row: fr,
+                to_col: tc,
+                to_row: tr,
+            })
+        }
+        AnchorKind::OneCell => {
+            let (fc, fr) = from?;
+            let (cx, cy) = ext?;
+            Some(ChartAnchor::OneCell {
+                from_col: fc,
+                from_row: fr,
+                ext_cx_emu: cx,
+                ext_cy_emu: cy,
+            })
+        }
+        AnchorKind::Absolute => {
+            let (x, y) = pos?;
+            let (cx, cy) = ext?;
+            Some(ChartAnchor::Absolute {
+                pos_x_emu: x,
+                pos_y_emu: y,
+                ext_cx_emu: cx,
+                ext_cy_emu: cy,
+            })
+        }
+    }
+}
+
+fn parse_xy_emu(
+    e: &BytesStart,
+    decoder: quick_xml::Decoder,
+    x_key: &[u8],
+    y_key: &[u8],
+) -> Option<(i64, i64)> {
+    let mut x: Option<i64> = None;
+    let mut y: Option<i64> = None;
+    for a in e.attributes().flatten() {
+        let k = a.key.local_name();
+        let kref = k.as_ref();
+        if kref == x_key || kref == y_key {
+            let Ok(s) = decoder.decode(&a.value) else {
+                continue;
+            };
+            let Ok(v) = s.trim().parse::<i64>() else {
+                continue;
+            };
+            if kref == x_key {
+                x = Some(v);
+            } else {
+                y = Some(v);
+            }
+        }
+    }
+    Some((x?, y?))
 }
 
 /// The `a:graphicData/@uri` values that identify an embedded chart. Per ISO/IEC
