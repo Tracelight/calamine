@@ -3044,3 +3044,68 @@ fn data_table_preserves_cached_value() {
         "corner cell cached value should be preserved"
     );
 }
+
+#[test]
+fn test_worksheet_charts_anchors() {
+    use calamine::{Chart, ChartAnchor, ChartSeries};
+
+    let mut wb: Xlsx<_> = wb("chart_anchors.xlsx");
+
+    assert_eq!(wb.sheet_names(), vec!["Sheet1"]);
+
+    let charts = wb.worksheet_charts("Sheet1");
+    assert_eq!(
+        charts,
+        vec![
+            Chart {
+                id: Some("{C763C1C0-5A7F-C41B-F64F-D22BE9B9CAD9}".into()),
+                name: Some("TwoCellChart".into()),
+                title: Some("Two-Cell Anchor (move + size)".into()),
+                chart_type: Some("barChart".into()),
+                anchor: Some(ChartAnchor {
+                    from_col: 3,
+                    from_row: 0,
+                    to_col: 11,
+                    to_row: 15,
+                }),
+                series: vec![ChartSeries {
+                    name: Some("Value".into()),
+                    categories_ref: Some("Sheet1!$A$2:$A$6".into()),
+                    values_ref: Some("Sheet1!$B$2:$B$6".into()),
+                    x_values_ref: None,
+                    y_values_ref: None,
+                }],
+            },
+            Chart {
+                id: Some("{1C1C1088-488F-D327-7904-FC19D85882F0}".into()),
+                name: Some("OneCellChart".into()),
+                title: Some("One-Cell Anchor (move only)".into()),
+                chart_type: Some("barChart".into()),
+                anchor: None,
+                series: vec![ChartSeries {
+                    name: Some("Value".into()),
+                    categories_ref: Some("Sheet1!$A$2:$A$6".into()),
+                    values_ref: Some("Sheet1!$B$2:$B$6".into()),
+                    x_values_ref: None,
+                    y_values_ref: None,
+                }],
+            },
+            Chart {
+                id: Some("{74D5C176-DE85-5BF1-C6BE-F66B60ED9242}".into()),
+                name: Some("AbsoluteChart".into()),
+                title: Some("Absolute Anchor (frozen)".into()),
+                chart_type: Some("barChart".into()),
+                anchor: None,
+                series: vec![ChartSeries {
+                    name: Some("Value".into()),
+                    categories_ref: Some("Sheet1!$A$2:$A$6".into()),
+                    values_ref: Some("Sheet1!$B$2:$B$6".into()),
+                    x_values_ref: None,
+                    y_values_ref: None,
+                }],
+            },
+        ]
+    );
+
+    assert!(wb.worksheet_charts("DoesNotExist").is_empty());
+}
