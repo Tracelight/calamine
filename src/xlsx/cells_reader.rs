@@ -28,6 +28,14 @@ use crate::{
 
 type FormulaMap = HashMap<(u32, u32), (i64, i64)>;
 
+#[derive(Debug, Default)]
+struct CellAttributes<'a> {
+    reference: Option<&'a [u8]>,
+    style_id: usize,
+    format_id: Option<usize>,
+    cell_type: Option<&'a [u8]>,
+}
+
 /// Item returned by the XLSX worksheet XML stream.
 #[derive(Debug, Clone)]
 pub enum WorksheetItem<'a> {
@@ -179,8 +187,8 @@ where
                     self.col_index = 0;
                 }
                 Ok(Event::Start(c_element)) if c_element.local_name().as_ref() == b"c" => {
-                    let attribute = get_attribute(c_element.attributes(), QName(b"r"))?;
-                    let pos = if let Some(range) = attribute {
+                    let attrs = read_cell_attributes(&c_element)?;
+                    let pos = if let Some(range) = attrs.reference {
                         let (row, col) = get_row_column(range)?;
                         self.col_index = col;
                         (row, col)
@@ -190,30 +198,22 @@ where
                     let mut value = DataRef::Empty;
                     let mut style = None;
 
-                    // Extract style ID if present, default to 0 if not present
-                    let style_id = if let Ok(Some(style_id_str)) =
-                        get_attribute(c_element.attributes(), QName(b"s"))
-                    {
-                        atoi_simd::parse::<usize>(style_id_str).unwrap_or(0)
-                    } else {
-                        0 // Default to style ID 0 when not present
-                    };
-
-                    if style_id < self.styles.len() {
-                        style = Some(&self.styles[style_id]);
+                    if attrs.style_id < self.styles.len() {
+                        style = Some(&self.styles[attrs.style_id]);
                     }
 
+                    let cell_format = attrs.format_id.and_then(|id| self.formats.get(id));
                     loop {
                         self.cell_buf.clear();
                         match self.xml.read_event_into(&mut self.cell_buf) {
                             Ok(Event::Start(e)) => {
                                 value = read_value(
                                     self.strings,
-                                    self.formats,
                                     self.is_1904,
                                     &mut self.xml,
                                     &e,
-                                    &c_element,
+                                    cell_format,
+                                    attrs.cell_type,
                                 )?;
                             }
                             Ok(Event::End(e)) if e.local_name().as_ref() == b"c" => break,
@@ -256,8 +256,8 @@ where
                     self.col_index = 0;
                 }
                 Ok(Event::Start(c_element)) if c_element.local_name().as_ref() == b"c" => {
-                    let attribute = get_attribute(c_element.attributes(), QName(b"r"))?;
-                    let pos = if let Some(range) = attribute {
+                    let attrs = read_cell_attributes(&c_element)?;
+                    let pos = if let Some(range) = attrs.reference {
                         let (row, col) = get_row_column(range)?;
                         self.col_index = col;
                         (row, col)
@@ -267,17 +267,8 @@ where
                     let mut value = None;
                     let mut style = None;
 
-                    // Extract style ID if present, default to 0 if not present
-                    let style_id = if let Ok(Some(style_id_str)) =
-                        get_attribute(c_element.attributes(), QName(b"s"))
-                    {
-                        atoi_simd::parse::<usize>(style_id_str).unwrap_or(0)
-                    } else {
-                        0 // Default to style ID 0 when not present
-                    };
-
-                    if style_id < self.styles.len() {
-                        style = Some(&self.styles[style_id]);
+                    if attrs.style_id < self.styles.len() {
+                        style = Some(&self.styles[attrs.style_id]);
                     }
 
                     loop {
@@ -396,8 +387,8 @@ where
                     self.col_index = 0;
                 }
                 Ok(Event::Start(ref c_element)) if c_element.local_name().as_ref() == b"c" => {
-                    let attribute = get_attribute(c_element.attributes(), QName(b"r"))?;
-                    let pos = if let Some(range) = attribute {
+                    let attrs = read_cell_attributes(c_element)?;
+                    let pos = if let Some(range) = attrs.reference {
                         let (row, col) = get_row_column(range)?;
                         self.col_index = col;
                         (row, col)
@@ -405,17 +396,8 @@ where
                         (self.row_index, self.col_index)
                     };
 
-                    // Extract style ID if present
-                    let style_id = if let Ok(Some(style_id_str)) =
-                        get_attribute(c_element.attributes(), QName(b"s"))
-                    {
-                        atoi_simd::parse::<usize>(style_id_str).unwrap_or(0)
-                    } else {
-                        0
-                    };
-
-                    let style = if style_id < self.styles.len() {
-                        &self.styles[style_id]
+                    let style = if attrs.style_id < self.styles.len() {
+                        &self.styles[attrs.style_id]
                     } else {
                         // For out-of-bounds style IDs, use the default style at index 0
                         &self.styles[0]
@@ -583,8 +565,8 @@ where
                     if self.phase == WorksheetItemReaderPhase::InSheetData
                         && c_element.local_name().as_ref() == b"c" =>
                 {
-                    let attribute = get_attribute(c_element.attributes(), QName(b"r"))?;
-                    let pos = if let Some(range) = attribute {
+                    let attrs = read_cell_attributes(&c_element)?;
+                    let pos = if let Some(range) = attrs.reference {
                         let (row, col) = get_row_column(range)?;
                         self.col_index = col;
                         (row, col)
@@ -599,7 +581,7 @@ where
                         self.styles,
                         self.is_1904,
                         &mut self.shared_formula_parents,
-                        &c_element,
+                        &attrs,
                         pos,
                     )?;
                     self.col_index += 1;
@@ -973,6 +955,30 @@ where
     }
 }
 
+fn read_cell_attributes<'a>(e: &'a BytesStart<'a>) -> Result<CellAttributes<'a>, XlsxError> {
+    let mut attrs = CellAttributes::default();
+    for attr in e.attributes() {
+        match attr {
+            Ok(Attribute {
+                key,
+                value: Cow::Borrowed(value),
+            }) => match key.as_ref() {
+                b"r" => attrs.reference = Some(value),
+                b"s" => {
+                    let id = atoi_simd::parse::<usize>(value).unwrap_or(0);
+                    attrs.style_id = id;
+                    attrs.format_id = Some(id);
+                }
+                b"t" => attrs.cell_type = Some(value),
+                _ => (),
+            },
+            Err(e) => return Err(XlsxError::XmlAttr(e)),
+            _ => (),
+        }
+    }
+    Ok(attrs)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn read_cell_full<'a, RS>(
     xml: &mut XlReader<'_, RS>,
@@ -982,7 +988,7 @@ fn read_cell_full<'a, RS>(
     styles: &'a [Style],
     is_1904: bool,
     shared_formula_parents: &mut HashMap<usize, (u32, u32)>,
-    c_element: &BytesStart<'_>,
+    attrs: &CellAttributes<'_>,
     pos: (u32, u32),
 ) -> Result<Cell<'a, CellFull<'a>>, XlsxError>
 where
@@ -992,23 +998,17 @@ where
     let mut formula = None;
     let mut style = None;
 
-    let style_id =
-        if let Ok(Some(style_id_str)) = get_attribute(c_element.attributes(), QName(b"s")) {
-            atoi_simd::parse::<usize>(style_id_str).unwrap_or(0)
-        } else {
-            0
-        };
-
-    if style_id < styles.len() {
-        style = Some(&styles[style_id]);
+    if attrs.style_id < styles.len() {
+        style = Some(&styles[attrs.style_id]);
     }
 
+    let cell_format = attrs.format_id.and_then(|id| formats.get(id));
     loop {
         cell_buf.clear();
         match xml.read_event_into(cell_buf) {
             Ok(Event::Start(e)) => match e.local_name().as_ref() {
                 b"v" | b"is" => {
-                    value = read_value(strings, formats, is_1904, xml, &e, c_element)?;
+                    value = read_value(strings, is_1904, xml, &e, cell_format, attrs.cell_type)?;
                 }
                 b"f" => {
                     formula = read_cell_full_formula(xml, shared_formula_parents, pos, &e)?;
@@ -1032,11 +1032,11 @@ where
 
 fn read_value<'s, RS>(
     strings: &'s [String],
-    formats: &[CellFormat],
     is_1904: bool,
     xml: &mut XlReader<'_, RS>,
     e: &BytesStart<'_>,
-    c_element: &BytesStart<'_>,
+    cell_format: Option<&CellFormat>,
+    cell_type: Option<&[u8]>,
 ) -> Result<DataRef<'s>, XlsxError>
 where
     RS: Read + Seek,
@@ -1060,7 +1060,7 @@ where
                     _ => (),
                 }
             }
-            read_v(v, strings, formats, c_element, is_1904)?
+            read_v(v, strings, cell_format, cell_type, is_1904)?
         }
         b"f" => {
             xml.read_to_end_into(e.name(), &mut Vec::new())?;
@@ -1186,18 +1186,12 @@ fn parse_data_table_formula(e: &BytesStart<'_>) -> Result<DataTableFormula, Xlsx
 fn read_v<'s>(
     v: String,
     strings: &'s [String],
-    formats: &[CellFormat],
-    c_element: &BytesStart<'_>,
+    cell_format: Option<&CellFormat>,
+    cell_type: Option<&[u8]>,
     is_1904: bool,
 ) -> Result<DataRef<'s>, XlsxError> {
-    let cell_format = match get_attribute(c_element.attributes(), QName(b"s")) {
-        Ok(Some(style)) => {
-            let id = atoi_simd::parse::<usize>(style).unwrap_or(0);
-            formats.get(id)
-        }
-        _ => Some(&CellFormat::Other),
-    };
-    match get_attribute(c_element.attributes(), QName(b"t"))? {
+    let cell_format = cell_format.or(Some(&CellFormat::Other));
+    match cell_type {
         Some(b"s") => {
             // Cell value is an index into the shared string table.
             let idx = atoi_simd::parse::<usize>(v.as_bytes()).unwrap_or(0);
