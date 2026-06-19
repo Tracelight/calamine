@@ -36,8 +36,8 @@ use crate::style::{
 use crate::utils::{unescape_entity_to_buffer, unescape_xml};
 use crate::vba::VbaProject;
 use crate::{
-    Cell, CellErrorType, Data, Dimensions, HeaderRow, Metadata, Range, Reader, ReaderRef, Sheet,
-    SheetType, SheetVisible, Style, Table,
+    Cell, CellErrorType, Data, DefinedName, Dimensions, HeaderRow, Metadata, Range, Reader,
+    ReaderRef, Sheet, SheetType, SheetVisible, Style, Table,
 };
 pub use cells_reader::{WorksheetItem, XlsxCellReader, XlsxWorksheetItemReader};
 pub use charts::{Chart, ChartAnchor, ChartSeries};
@@ -1180,12 +1180,24 @@ impl<RS: Read + Seek> Xlsx<RS> {
                     };
                 }
                 Ok(Event::Start(e)) if e.local_name().as_ref() == b"definedName" => {
-                    if let Some(a) = e
-                        .attributes()
-                        .filter_map(std::result::Result::ok)
-                        .find(|a| a.key == QName(b"name"))
-                    {
-                        let name = a.decode_and_unescape_value(xml.decoder())?.to_string();
+                    let mut name = None;
+                    let mut local_sheet_id = None;
+                    for a in e.attributes().filter_map(std::result::Result::ok) {
+                        match a.key {
+                            QName(b"name") => {
+                                name =
+                                    Some(a.decode_and_unescape_value(xml.decoder())?.to_string());
+                            }
+                            QName(b"localSheetId") => {
+                                local_sheet_id = a
+                                    .decode_and_unescape_value(xml.decoder())?
+                                    .parse::<u32>()
+                                    .ok();
+                            }
+                            _ => (),
+                        }
+                    }
+                    if let Some(name) = name {
                         val_buf.clear();
                         let mut value = String::new();
                         loop {
@@ -1197,7 +1209,11 @@ impl<RS: Read + Seek> Xlsx<RS> {
                                 _ => (),
                             }
                         }
-                        defined_names.push((name, value));
+                        defined_names.push(DefinedName {
+                            name,
+                            formula: value,
+                            local_sheet_id,
+                        });
                     }
                 }
                 Ok(Event::End(e)) if e.local_name().as_ref() == b"workbook" => break,

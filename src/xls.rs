@@ -19,8 +19,8 @@ use crate::utils::read_usize;
 use crate::utils::{push_column, read_f64, read_i16, read_i32, read_u16, read_u32};
 use crate::vba::VbaProject;
 use crate::{
-    Cell, CellErrorType, Data, Dimensions, HeaderRow, Metadata, Range, Reader, Sheet, SheetType,
-    SheetVisible, Style, WorksheetLayout,
+    Cell, CellErrorType, Data, DefinedName, Dimensions, HeaderRow, Metadata, Range, Reader, Sheet,
+    SheetType, SheetVisible, Style, WorksheetLayout,
 };
 
 #[derive(Debug)]
@@ -429,7 +429,11 @@ impl<RS: Read + Seek> Xls<RS> {
                         .map_or("#REF", |sh| &sh.1);
                     f = format!("{sh}!{f}");
                 }
-                (name, f)
+                DefinedName {
+                    name,
+                    formula: f,
+                    local_sheet_id: None,
+                }
             })
             .collect::<Vec<_>>();
 
@@ -1203,7 +1207,7 @@ fn parse_defined_names(rgce: &[u8]) -> Result<(Option<usize>, String), XlsError>
 fn parse_formula(
     mut rgce: &[u8],
     sheets: &[String],
-    names: &[(String, String)],
+    names: &[DefinedName],
     xtis: &[Xti],
     encoding: &XlsEncoding,
 ) -> Result<String, XlsError> {
@@ -1463,7 +1467,7 @@ fn parse_formula(
             0x23 | 0x43 | 0x63 => {
                 let iname = read_u32(rgce) as usize - 1; // one-based
                 stack.push(formula.len());
-                formula.push_str(names.get(iname).map_or("#REF!", |n| &*n.0));
+                formula.push_str(names.get(iname).map_or("#REF!", |n| &*n.name));
                 rgce = &rgce[4..];
             }
             0x24 | 0x44 | 0x64 => {

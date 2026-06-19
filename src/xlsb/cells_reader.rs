@@ -8,7 +8,7 @@ use crate::{
     datatype::DataRef,
     formats::{format_excel_f64_ref, CellFormat},
     utils::{read_f64, read_i32, read_u32, read_usize},
-    Cell, CellErrorType, Dimensions, XlsbError,
+    Cell, CellErrorType, DefinedName, Dimensions, XlsbError,
 };
 
 use super::{cell_format, parse_formula, wide_str, RecordIter};
@@ -22,7 +22,7 @@ where
     formats: &'a [CellFormat],
     strings: &'a [String],
     extern_sheets: &'a [String],
-    metadata_names: &'a [(String, String)],
+    metadata_names: &'a [DefinedName],
     typ: u16,
     row: u32,
     is_1904: bool,
@@ -39,7 +39,7 @@ where
         formats: &'a [CellFormat],
         strings: &'a [String],
         extern_sheets: &'a [String],
-        metadata_names: &'a [(String, String)],
+        metadata_names: &'a [DefinedName],
         is_1904: bool,
     ) -> Result<Self, XlsbError> {
         let mut buf = Vec::with_capacity(1024);

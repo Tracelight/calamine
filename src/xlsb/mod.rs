@@ -25,8 +25,8 @@ use crate::formats::{builtin_format_by_code, detect_custom_number_format, CellFo
 use crate::utils::{push_column, read_f64, read_i32, read_u16, read_u32, read_usize};
 use crate::vba::VbaProject;
 use crate::{
-    Cell, Data, HeaderRow, Metadata, Range, Reader, ReaderRef, Sheet, SheetType, SheetVisible,
-    Style, WorksheetLayout,
+    Cell, Data, DefinedName, HeaderRow, Metadata, Range, Reader, ReaderRef, Sheet, SheetType,
+    SheetVisible, Style, WorksheetLayout,
 };
 
 /// A Xlsb specific error
@@ -399,7 +399,11 @@ impl<RS: Read + Seek> Xlsb<RS> {
                     let rgce_len = read_u32(&buf[9 + str_len..]) as usize;
                     let rgce = &buf[13 + str_len..13 + str_len + rgce_len];
                     let formula = parse_formula(rgce, &self.extern_sheets, &defined_names)?;
-                    defined_names.push((name, formula));
+                    defined_names.push(DefinedName {
+                        name,
+                        formula,
+                        local_sheet_id: None,
+                    });
                 }
                 0x009D | 0x0225 | 0x018D | 0x0180 | 0x009A | 0x0252 | 0x0229 | 0x009B | 0x0084 => {
                     // record supposed to happen AFTER BrtNames
@@ -730,7 +734,7 @@ fn wide_str<'a>(buf: &'a [u8], str_len: &mut usize) -> Result<Cow<'a, str>, Xlsb
 fn parse_formula(
     mut rgce: &[u8],
     sheets: &[String],
-    names: &[(String, String)],
+    names: &[DefinedName],
 ) -> Result<String, XlsbError> {
     if rgce.is_empty() {
         return Ok(String::new());
@@ -962,7 +966,7 @@ fn parse_formula(
                 let iname = read_u32(rgce) as usize - 1; // one-based
                 stack.push(formula.len());
                 if let Some(name) = names.get(iname) {
-                    formula.push_str(&name.0);
+                    formula.push_str(&name.name);
                 }
                 rgce = &rgce[4..];
             }

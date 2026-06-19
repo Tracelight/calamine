@@ -6,9 +6,9 @@ use calamine::vba::Reference;
 use calamine::Data::{Bool, DateTime, DateTimeIso, DurationIso, Empty, Error, Float, Int, String};
 use calamine::{
     open_workbook, open_workbook_auto, BorderStyle, CellFormula, Color, DataRef, DataTableFormula,
-    DataTableKind, DataTableOrientation, DataType, Dimensions, ExcelDateTime, ExcelDateTimeType,
-    HeaderRow, HorizontalAlignment, Ods, Range, Reader, ReaderRef, Sheet, SheetType, SheetVisible,
-    UnderlineStyle, VerticalAlignment, WorksheetItem, Xls, Xlsb, Xlsx,
+    DataTableKind, DataTableOrientation, DataType, DefinedName, Dimensions, ExcelDateTime,
+    ExcelDateTimeType, HeaderRow, HorizontalAlignment, Ods, Range, Reader, ReaderRef, Sheet,
+    SheetType, SheetVisible, UnderlineStyle, VerticalAlignment, WorksheetItem, Xls, Xlsb, Xlsx,
 };
 use calamine::{CellErrorType::*, Data};
 use rstest::rstest;
@@ -21,6 +21,14 @@ static INIT: Once = Once::new();
 
 fn test_path(name: &str) -> std::string::String {
     format!("tests/{name}")
+}
+
+fn defined_name(name: &str, formula: &str, local_sheet_id: Option<u32>) -> DefinedName {
+    DefinedName {
+        name: name.to_string(),
+        formula: formula.to_string(),
+        local_sheet_id,
+    }
 }
 
 /// Setup function that is only run once, even if called multiple times.
@@ -402,13 +410,27 @@ fn xlsx_richtext_namespaced() {
 fn defined_names_xlsx() {
     let excel: Xlsx<_> = wb("issues.xlsx");
     let mut defined_names = excel.defined_names().to_vec();
-    defined_names.sort();
+    defined_names.sort_by(|a, b| a.name.cmp(&b.name));
     assert_eq!(
         defined_names,
         [
-            ("MyBrokenRange".to_string(), "Sheet1!#REF!".to_string()),
-            ("MyDataTypes".to_string(), "datatypes!$A$1:$A$6".to_string()),
-            ("OneRange".to_string(), "Sheet1!$A$1".to_string()),
+            defined_name("MyBrokenRange", "Sheet1!#REF!", None),
+            defined_name("MyDataTypes", "datatypes!$A$1:$A$6", None),
+            defined_name("OneRange", "Sheet1!$A$1", None),
+        ]
+    );
+}
+
+#[test]
+fn defined_names_xlsx_local_sheet_id() {
+    let excel: Xlsx<_> = wb("issue_174.xlsx");
+    let mut defined_names = excel.defined_names().to_vec();
+    defined_names.sort_by(|a, b| a.name.cmp(&b.name));
+    assert_eq!(
+        defined_names,
+        [
+            defined_name("_xlnm.Print_Area", "#REF!", Some(0)),
+            defined_name("_xlnm.Sheet_Title", "\"Sheet1\"", Some(0)),
         ]
     );
 }
@@ -417,13 +439,13 @@ fn defined_names_xlsx() {
 fn defined_names_xlsb() {
     let excel: Xlsb<_> = wb("issues.xlsb");
     let mut defined_names = excel.defined_names().to_vec();
-    defined_names.sort();
+    defined_names.sort_by(|a, b| a.name.cmp(&b.name));
     assert_eq!(
         defined_names,
         [
-            ("MyBrokenRange".to_string(), "Sheet1!#REF!".to_string()),
-            ("MyDataTypes".to_string(), "datatypes!$A$1:$A$6".to_string()),
-            ("OneRange".to_string(), "Sheet1!$A$1".to_string()),
+            defined_name("MyBrokenRange", "Sheet1!#REF!", None),
+            defined_name("MyDataTypes", "datatypes!$A$1:$A$6", None),
+            defined_name("OneRange", "Sheet1!$A$1", None),
         ]
     );
 }
@@ -432,13 +454,13 @@ fn defined_names_xlsb() {
 fn defined_names_xls() {
     let mut excel: Xls<_> = wb("issues.xls");
     let mut defined_names = excel.defined_names().to_vec();
-    defined_names.sort();
+    defined_names.sort_by(|a, b| a.name.cmp(&b.name));
     assert_eq!(
         defined_names,
         [
-            ("MyBrokenRange".to_string(), "Sheet1!#REF!".to_string()),
-            ("MyDataTypes".to_string(), "datatypes!$A$1:$A$6".to_string()),
-            ("OneRange".to_string(), "Sheet1!$A$1".to_string()),
+            defined_name("MyBrokenRange", "Sheet1!#REF!", None),
+            defined_name("MyDataTypes", "datatypes!$A$1:$A$6", None),
+            defined_name("OneRange", "Sheet1!$A$1", None),
         ]
     );
     let vba = excel.vba_project().unwrap().unwrap();
@@ -476,19 +498,13 @@ fn defined_names_xls() {
 fn defined_names_ods() {
     let excel: Ods<_> = wb("issues.ods");
     let mut defined_names = excel.defined_names().to_vec();
-    defined_names.sort();
+    defined_names.sort_by(|a, b| a.name.cmp(&b.name));
     assert_eq!(
         defined_names,
         [
-            (
-                "MyBrokenRange".to_string(),
-                "of:=[Sheet1.#REF!]".to_string(),
-            ),
-            (
-                "MyDataTypes".to_string(),
-                "datatypes.$A$1:datatypes.$A$6".to_string(),
-            ),
-            ("OneRange".to_string(), "Sheet1.$A$1".to_string()),
+            defined_name("MyBrokenRange", "of:=[Sheet1.#REF!]", None),
+            defined_name("MyDataTypes", "datatypes.$A$1:datatypes.$A$6", None),
+            defined_name("OneRange", "Sheet1.$A$1", None),
         ]
     );
 }
