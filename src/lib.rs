@@ -44,7 +44,7 @@
 //!
 //! // You can also get defined names definition (string representation only)
 //! for name in workbook.defined_names() {
-//!     println!("name: {}, formula: {}", name.0, name.1);
+//!     println!("name: {}, formula: {}", name.name, name.formula);
 //! }
 //!
 //! // Now get all formula!
@@ -195,8 +195,19 @@ impl Dimensions {
 #[derive(Debug, Default)]
 pub struct Metadata {
     sheets: Vec<Sheet>,
-    /// Map of sheet names/sheet path within zip archive
-    names: Vec<(String, String)>,
+    names: Vec<DefinedName>,
+}
+
+/// A workbook defined name (named range / constant / formula).
+#[derive(Debug, Clone, PartialEq)]
+pub struct DefinedName {
+    /// The name identifier.
+    pub name: String,
+    /// The "refers-to" definition, verbatim - a range/constant/formula string. Not parsed.
+    pub formula: String,
+    /// Worksheet scope: 0-based index of the sheet (in workbook `<sheets>` order) the name is
+    /// local to, or `None` for workbook-global. Raw `localSheetId`; NOT resolved to a sheet name.
+    pub local_sheet_id: Option<u32>,
 }
 
 /// Type of sheet.
@@ -337,7 +348,7 @@ where
     }
 
     /// Get all defined names (Ranges names etc)
-    fn defined_names(&self) -> &[(String, String)] {
+    fn defined_names(&self) -> &[DefinedName] {
         &self.metadata().names
     }
 

@@ -23,8 +23,8 @@ use zip::result::ZipError;
 use crate::utils::unescape_entity_to_buffer;
 use crate::vba::VbaProject;
 use crate::{
-    Data, DataType, HeaderRow, Metadata, Range, Reader, Sheet, SheetType, SheetVisible, Style,
-    WorksheetLayout,
+    Data, DataType, DefinedName, HeaderRow, Metadata, Range, Reader, Sheet, SheetType,
+    SheetVisible, Style, WorksheetLayout,
 };
 use std::marker::PhantomData;
 
@@ -269,7 +269,7 @@ where
 struct Content {
     sheets: BTreeMap<String, (Range<Data>, Range<String>)>,
     sheets_metadata: Vec<Sheet>,
-    defined_names: Vec<(String, String)>,
+    defined_names: Vec<DefinedName>,
 }
 
 /// Check password protection
@@ -704,9 +704,7 @@ where
     }
 }
 
-fn read_named_expressions<RS>(
-    reader: &mut OdsReader<'_, RS>,
-) -> Result<Vec<(String, String)>, OdsError>
+fn read_named_expressions<RS>(reader: &mut OdsReader<'_, RS>) -> Result<Vec<DefinedName>, OdsError>
 where
     RS: Read + Seek,
 {
@@ -733,7 +731,11 @@ where
                         _ => (),
                     }
                 }
-                defined_names.push((name, formula));
+                defined_names.push(DefinedName {
+                    name,
+                    formula,
+                    local_sheet_id: None,
+                });
             }
             Ok(Event::End(e))
                 if e.name() == QName(b"table:named-range")
