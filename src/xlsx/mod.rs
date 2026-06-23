@@ -48,6 +48,11 @@ pub use comments::{
 
 pub(crate) type XlReader<'a, RS> = XmlReader<BufReader<ZipFile<'a, RS>>>;
 
+struct WorkbookRelationship {
+    target: String,
+    typ: Option<String>,
+}
+
 /// Maximum number of rows allowed in an XLSX file.
 pub const MAX_ROWS: u32 = 1_048_576;
 
@@ -1089,7 +1094,7 @@ impl<RS: Read + Seek> Xlsx<RS> {
 
     fn read_workbook(
         &mut self,
-        relationships: &BTreeMap<Vec<u8>, String>,
+        relationships: &BTreeMap<Vec<u8>, WorkbookRelationship>,
     ) -> Result<(), XlsxError> {
         let mut xml = match xml_reader(&mut self.zip, "xl/workbook.xml") {
             None => return Ok(()),
@@ -1104,6 +1109,7 @@ impl<RS: Read + Seek> Xlsx<RS> {
                 Ok(Event::Start(e)) if e.local_name().as_ref() == b"sheet" => {
                     let mut name = String::new();
                     let mut path = String::new();
+                    let mut typ = None;
                     let mut visible = SheetVisible::Visible;
                     for a in e.attributes() {
                         let a = a?;
@@ -1135,33 +1141,24 @@ impl<RS: Read + Seek> Xlsx<RS> {
                                 key: QName(b"r:id" | b"relationships:id"),
                                 value: v,
                             } => {
-                                let r = &relationships
+                                let relationship = relationships
                                     .get(&*v)
-                                    .ok_or(XlsxError::RelationshipNotFound)?[..];
-                                // target may have prepended "/xl/" or "xl/" path;
-                                // strip if present
-                                path = if r.starts_with("/xl/") {
-                                    r[1..].to_string()
-                                } else if r.starts_with("xl/") {
-                                    r.to_string()
-                                } else {
-                                    format!("xl/{r}")
-                                };
+                                    .ok_or(XlsxError::RelationshipNotFound)?;
+                                path = normalize_relationship_target(&relationship.target);
+                                typ = relationship
+                                    .typ
+                                    .as_deref()
+                                    .and_then(sheet_type_from_relationship_type);
                             }
                             _ => (),
                         }
                     }
-                    let typ = match path.split('/').nth(1) {
-                        Some("worksheets") => SheetType::WorkSheet,
-                        Some("chartsheets") => SheetType::ChartSheet,
-                        Some("dialogsheets") => SheetType::DialogSheet,
-                        _ => {
-                            return Err(XlsxError::Unrecognized {
-                                typ: "sheet:type",
-                                val: path.to_string(),
-                            })
-                        }
-                    };
+                    let typ = typ
+                        .or_else(|| sheet_type_from_relationship_target(&path))
+                        .ok_or_else(|| XlsxError::Unrecognized {
+                            typ: "sheet:type",
+                            val: path.to_string(),
+                        })?;
                     self.metadata.sheets.push(Sheet {
                         name: name.to_string(),
                         typ,
@@ -1210,7 +1207,7 @@ impl<RS: Read + Seek> Xlsx<RS> {
         Ok(())
     }
 
-    fn read_relationships(&mut self) -> Result<BTreeMap<Vec<u8>, String>, XlsxError> {
+    fn read_relationships(&mut self) -> Result<BTreeMap<Vec<u8>, WorkbookRelationship>, XlsxError> {
         let mut xml = match xml_reader(&mut self.zip, "xl/_rels/workbook.xml.rels") {
             None => {
                 return Err(XlsxError::FileNotFound(
@@ -1227,6 +1224,7 @@ impl<RS: Read + Seek> Xlsx<RS> {
                 Ok(Event::Start(e)) if e.local_name().as_ref() == b"Relationship" => {
                     let mut id = Vec::new();
                     let mut target = String::new();
+                    let mut typ = None;
                     for a in e.attributes() {
                         match a? {
                             Attribute {
@@ -1237,10 +1235,14 @@ impl<RS: Read + Seek> Xlsx<RS> {
                                 key: QName(b"Target"),
                                 value: v,
                             } => target = xml.decoder().decode(&v)?.into_owned(),
+                            Attribute {
+                                key: QName(b"Type"),
+                                value: v,
+                            } => typ = Some(xml.decoder().decode(&v)?.into_owned()),
                             _ => (),
                         }
                     }
-                    relationships.insert(id, target);
+                    relationships.insert(id, WorkbookRelationship { target, typ });
                 }
                 Ok(Event::End(e)) if e.local_name().as_ref() == b"Relationships" => break,
                 Ok(Event::Eof) => return Err(XlsxError::XmlEof("Relationships")),
@@ -3453,6 +3455,26 @@ impl<RS: Read + Seek> ReaderRef<RS> for Xlsx<RS> {
         }
 
         Ok(Range::from_sparse(cells))
+    }
+}
+
+fn sheet_type_from_relationship_type(typ: &str) -> Option<SheetType> {
+    match typ.rsplit('/').next()? {
+        "worksheet" => Some(SheetType::WorkSheet),
+        "chartsheet" => Some(SheetType::ChartSheet),
+        "dialogsheet" => Some(SheetType::DialogSheet),
+        "xlMacrosheet" => Some(SheetType::MacroSheet),
+        _ => None,
+    }
+}
+
+fn sheet_type_from_relationship_target(target: &str) -> Option<SheetType> {
+    match target.split('/').nth(1)? {
+        "worksheets" => Some(SheetType::WorkSheet),
+        "chartsheets" => Some(SheetType::ChartSheet),
+        "dialogsheets" => Some(SheetType::DialogSheet),
+        "macrosheets" => Some(SheetType::MacroSheet),
+        _ => None,
     }
 }
 
