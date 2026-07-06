@@ -6,7 +6,12 @@
 
 use std::borrow::Cow;
 
-use quick_xml::{escape::resolve_xml_entity, events::BytesRef};
+use quick_xml::{
+    encoding::Decoder,
+    escape::resolve_xml_entity,
+    events::{attributes::Attribute, BytesRef},
+    XmlVersion,
+};
 
 const UNICODE_ESCAPE_LENGTH: usize = 7; // Length of _x00HH_.
 
@@ -76,6 +81,14 @@ pub fn push_column(mut col: u32, buf: &mut String) {
         }
         buf.extend(rev.chars().rev());
     }
+}
+
+#[inline]
+pub(crate) fn decode_attr_value<'a>(
+    attr: &Attribute<'a>,
+    decoder: Decoder,
+) -> Result<Cow<'a, str>, quick_xml::Error> {
+    attr.decoded_and_normalized_value(XmlVersion::Implicit1_0, decoder)
 }
 
 // Utility function to unescape standard XML entities or character references

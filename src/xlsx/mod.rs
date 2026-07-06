@@ -33,7 +33,7 @@ use crate::style::{
     Color, ColumnWidth, FreezePanes, NamedStyle, PaneState, RowHeight, SheetSettings,
     WorksheetLayout,
 };
-use crate::utils::{unescape_entity_to_buffer, unescape_xml};
+use crate::utils::{decode_attr_value, unescape_entity_to_buffer, unescape_xml};
 use crate::vba::VbaProject;
 use crate::{
     Cell, CellErrorType, Data, DefinedName, Dimensions, HeaderRow, Metadata, Range, Reader,
@@ -599,9 +599,8 @@ impl<RS: Read + Seek> Xlsx<RS> {
                                         key: QName(b"formatCode"),
                                         ..
                                     } => {
-                                        let format_code = a
-                                            .decode_and_unescape_value(xml.decoder())?
-                                            .into_owned();
+                                        let format_code =
+                                            decode_attr_value(&a, xml.decoder())?.into_owned();
                                         // Excel format codes use backslashes to escape special characters
                                         // Remove escape backslashes (backslash followed by any character becomes just the character)
                                         let mut unescaped = String::new();
@@ -1118,14 +1117,13 @@ impl<RS: Read + Seek> Xlsx<RS> {
                                 key: QName(b"name"),
                                 ..
                             } => {
-                                name = a.decode_and_unescape_value(xml.decoder())?.to_string();
+                                name = decode_attr_value(&a, xml.decoder())?.to_string();
                             }
                             Attribute {
                                 key: QName(b"state"),
                                 ..
                             } => {
-                                visible = match a.decode_and_unescape_value(xml.decoder())?.as_ref()
-                                {
+                                visible = match decode_attr_value(&a, xml.decoder())?.as_ref() {
                                     "visible" => SheetVisible::Visible,
                                     "hidden" => SheetVisible::Hidden,
                                     "veryHidden" => SheetVisible::VeryHidden,
@@ -1169,7 +1167,7 @@ impl<RS: Read + Seek> Xlsx<RS> {
                 Ok(Event::Start(e)) if e.name().as_ref() == b"workbookPr" => {
                     self.is_1904 = match e.try_get_attribute("date1904")? {
                         Some(c) => ["1", "true"].contains(
-                            &c.decode_and_unescape_value(xml.decoder())
+                            &decode_attr_value(&c, xml.decoder())
                                 .map_err(XlsxError::Xml)?
                                 .as_ref(),
                         ),
@@ -1182,14 +1180,11 @@ impl<RS: Read + Seek> Xlsx<RS> {
                     for a in e.attributes().filter_map(std::result::Result::ok) {
                         match a.key {
                             QName(b"name") => {
-                                name =
-                                    Some(a.decode_and_unescape_value(xml.decoder())?.to_string());
+                                name = Some(decode_attr_value(&a, xml.decoder())?.to_string());
                             }
                             QName(b"localSheetId") => {
-                                local_sheet_id = a
-                                    .decode_and_unescape_value(xml.decoder())?
-                                    .parse::<u32>()
-                                    .ok();
+                                local_sheet_id =
+                                    decode_attr_value(&a, xml.decoder())?.parse::<u32>().ok();
                             }
                             _ => (),
                         }
