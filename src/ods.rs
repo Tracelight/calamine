@@ -20,7 +20,7 @@ use quick_xml::Reader as XmlReader;
 use zip::read::{ZipArchive, ZipFile};
 use zip::result::ZipError;
 
-use crate::utils::unescape_entity_to_buffer;
+use crate::utils::{decode_attr_value, unescape_entity_to_buffer};
 use crate::vba::VbaProject;
 use crate::{
     Data, DataType, DefinedName, HeaderRow, Metadata, Range, Reader, Sheet, SheetType,
@@ -341,7 +341,7 @@ fn parse_content<RS: Read + Seek>(mut zip: ZipArchive<RS>) -> Result<Content, Od
             Ok(Event::Start(e)) if e.name() == QName(b"style:style") => {
                 style_name = e
                     .try_get_attribute(b"style:name")?
-                    .map(|a| a.decode_and_unescape_value(reader.decoder()))
+                    .map(|a| decode_attr_value(&a, reader.decoder()))
                     .transpose()?
                     .map(|x| x.to_string());
             }
@@ -350,7 +350,7 @@ fn parse_content<RS: Read + Seek>(mut zip: ZipArchive<RS>) -> Result<Content, Od
             {
                 let visible = match e.try_get_attribute(b"table:display")? {
                     Some(a) => {
-                        if a.decode_and_unescape_value(reader.decoder())?.parse()? {
+                        if decode_attr_value(&a, reader.decoder())?.parse()? {
                             SheetVisible::Visible
                         } else {
                             SheetVisible::Hidden
@@ -364,7 +364,7 @@ fn parse_content<RS: Read + Seek>(mut zip: ZipArchive<RS>) -> Result<Content, Od
                 let visible = styles
                     .get(
                         &e.try_get_attribute(b"table:style-name")?
-                            .map(|a| a.decode_and_unescape_value(reader.decoder()))
+                            .map(|a| decode_attr_value(&a, reader.decoder()))
                             .transpose()?
                             .map(|x| x.to_string()),
                     )
@@ -375,7 +375,7 @@ fn parse_content<RS: Read + Seek>(mut zip: ZipArchive<RS>) -> Result<Content, Od
                     .filter_map(|a| a.ok())
                     .find(|a| a.key == QName(b"table:name"))
                 {
-                    let name = a.decode_and_unescape_value(reader.decoder())?.to_string();
+                    let name = decode_attr_value(&a, reader.decoder())?.to_string();
                     let (range, formulas) = read_table(&mut reader)?;
                     sheets_metadata.push(Sheet {
                         name: name.clone(),
@@ -417,7 +417,7 @@ where
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) if e.name() == QName(b"table:table-row") => {
                 let row_repeats = match e.try_get_attribute(b"table:number-rows-repeated")? {
-                    Some(c) => c.decode_and_unescape_value(reader.decoder())?.parse()?,
+                    Some(c) => decode_attr_value(&c, reader.decoder())?.parse()?,
                     None => 1,
                 };
                 read_row(
@@ -629,7 +629,7 @@ where
             QName(b"office:string-value" | b"office:date-value" | b"office:time-value")
                 if !is_value_set =>
             {
-                let attr = a.decode_and_unescape_value(reader.decoder())?.to_string();
+                let attr = decode_attr_value(&a, reader.decoder())?.to_string();
                 val = match a.key {
                     QName(b"office:date-value") => Data::DateTimeIso(attr),
                     QName(b"office:time-value") => Data::DurationIso(attr),
@@ -644,7 +644,7 @@ where
             }
             QName(b"office:value-type") if !is_value_set => is_string = &*a.value == b"string",
             QName(b"table:formula") => {
-                formula = a.decode_and_unescape_value(reader.decoder())?.to_string();
+                formula = decode_attr_value(&a, reader.decoder())?.to_string();
             }
             _ => (),
         }
@@ -687,7 +687,7 @@ where
                 }
                 Ok(Event::Start(e)) if e.name() == QName(b"text:s") => {
                     let count = match e.try_get_attribute("text:c")? {
-                        Some(c) => c.decode_and_unescape_value(reader.decoder())?.parse()?,
+                        Some(c) => decode_attr_value(&c, reader.decoder())?.parse()?,
                         None => 1,
                     };
                     for _ in 0..count {
@@ -723,10 +723,10 @@ where
                     let a = a?;
                     match a.key {
                         QName(b"table:name") => {
-                            name = a.decode_and_unescape_value(reader.decoder())?.to_string();
+                            name = decode_attr_value(&a, reader.decoder())?.to_string();
                         }
                         QName(b"table:cell-range-address" | b"table:expression") => {
-                            formula = a.decode_and_unescape_value(reader.decoder())?.to_string();
+                            formula = decode_attr_value(&a, reader.decoder())?.to_string();
                         }
                         _ => (),
                     }
