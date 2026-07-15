@@ -837,6 +837,38 @@ fn table_by_ref() {
     );
 }
 
+// A freshly-created empty Excel table (header row + insert-row placeholder, saved by Excel as
+// `ref="A1:D2" insertRow="1"`). Stripping the header row and the insert row leaves no data
+// rows: the inverted dimensions currently panic in `Range::new` inside `table_by_name`.
+#[test]
+#[should_panic(expected = "invalid range bounds")]
+fn table_empty_insert_row() {
+    let mut xls: Xlsx<_> = wb("table-empty-insert-row.xlsx");
+    xls.load_tables().unwrap();
+    let _ = xls.table_by_name("EmptyTbl");
+}
+
+// Degenerate `ref="A1:D1"` (header row only, no data rows): stripping the header row inverts
+// the dimensions (start > end), which currently panics in `Range::new` inside `table_by_name`.
+#[test]
+#[should_panic(expected = "invalid range bounds")]
+fn table_header_only() {
+    let mut xls: Xlsx<_> = wb("table-header-only.xlsx");
+    xls.load_tables().unwrap();
+    let _ = xls.table_by_name("SalesTbl");
+}
+
+// Degenerate `ref="A1:D1" insertRow="1"`: after the header row is stripped, subtracting the
+// insert row underflows the end row (u32) inside `load_tables`. Debug builds panic on the
+// overflow; release builds (overflow-checks off) wrap to u32::MAX and later abort the process
+// on a ~u32::MAX-row allocation in `table_by_name`.
+#[test]
+#[should_panic(expected = "attempt to subtract with overflow")]
+fn table_insert_row_degenerate() {
+    let mut xls: Xlsx<_> = wb("table-insert-row-degenerate.xlsx");
+    let _ = xls.load_tables();
+}
+
 #[test]
 fn date_xls() {
     let mut xls: Xls<_> = wb("date.xls");
