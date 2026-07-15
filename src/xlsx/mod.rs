@@ -345,9 +345,7 @@ impl FromStr for CellErrorType {
     }
 }
 
-/// Table dimensions are `None` when the table has no data rows (e.g. a freshly-created
-/// empty table whose ref covers only the header row and insert-row placeholder).
-type Tables = Option<Vec<(String, String, Vec<String>, Option<Dimensions>)>>;
+type Tables = Option<Vec<TableMetadata>>;
 
 /// A struct representing xml zipped excel file
 /// Xlsx, Xlsm, Xlam
@@ -1393,26 +1391,16 @@ impl<RS: Read + Seek> Xlsx<RS> {
                         _ => (),
                     }
                 }
-                let mut dims = get_dimension(table_meta.ref_cells.as_bytes())?;
-                if table_meta.header_row_count != 0 {
-                    dims.start.0 = dims.start.0.saturating_add(table_meta.header_row_count);
-                }
-                if table_meta.totals_row_count != 0 {
-                    dims.end.0 = dims.end.0.saturating_sub(table_meta.totals_row_count);
-                }
-                if table_meta.insert_row {
-                    dims.end.0 = dims.end.0.saturating_sub(1);
-                }
-                // Stripping header/totals/insert rows can leave a table with no data rows
-                // (inverted dimensions). Record it as having an empty data range.
-                let valid = dims.start.0 <= dims.end.0 && dims.start.1 <= dims.end.1;
-                let dims = valid.then_some(dims);
-                new_tables.push((
-                    table_meta.display_name,
-                    sheet_name.clone(),
-                    column_names,
-                    dims,
-                ));
+                let dims = get_dimension(table_meta.ref_cells.as_bytes())?;
+                new_tables.push(TableMetadata {
+                    name: table_meta.display_name,
+                    sheet_name: sheet_name.clone(),
+                    columns: column_names,
+                    dimensions: dims,
+                    header_row_count: table_meta.header_row_count,
+                    totals_row_count: table_meta.totals_row_count,
+                    insert_row: table_meta.insert_row,
+                });
             }
         }
         self.tables = Some(new_tables);
@@ -1485,25 +1473,11 @@ impl<RS: Read + Seek> Xlsx<RS> {
 
     #[inline]
     fn get_table_meta(&self, table_name: &str) -> Result<TableMetadata, XlsxError> {
-        let match_table_meta = self
-            .tables
-            .as_ref()
-            .expect("Tables must be loaded before they are referenced")
+        self.tables_metadata()
             .iter()
-            .find(|(table, ..)| table == table_name)
-            .ok_or_else(|| XlsxError::TableNotFound(table_name.into()))?;
-
-        let name = match_table_meta.0.to_owned();
-        let sheet_name = match_table_meta.1.clone();
-        let columns = match_table_meta.2.clone();
-        let dimensions = match_table_meta.3;
-
-        Ok(TableMetadata {
-            name,
-            sheet_name,
-            columns,
-            dimensions,
-        })
+            .find(|meta| meta.name == table_name)
+            .cloned()
+            .ok_or_else(|| XlsxError::TableNotFound(table_name.into()))
     }
 
     /// Load the merged regions in the workbook.
@@ -1753,12 +1727,25 @@ impl<RS: Read + Seek> Xlsx<RS> {
     /// ```
     ///
     pub fn table_names(&self) -> Vec<&String> {
+        self.tables_metadata()
+            .iter()
+            .map(|meta| &meta.name)
+            .collect()
+    }
+
+    /// Get the metadata of all the tables in the workbook.
+    ///
+    /// The metadata matches the tables' `xl/tables/*.xml` parts: the full `ref`
+    /// range plus the header/totals/insert-row shape (see [`TableMetadata`]).
+    /// Unlike [`Xlsx::table_by_name()`], this does not parse any worksheet data.
+    ///
+    /// # Panics
+    ///
+    /// Panics if tables have not been loaded via [`Xlsx::load_tables()`].
+    pub fn tables_metadata(&self) -> &[TableMetadata] {
         self.tables
             .as_ref()
             .expect("Tables must be loaded before they are referenced")
-            .iter()
-            .map(|(name, ..)| name)
-            .collect()
     }
 
     /// Get the names of all the tables in a worksheet.
@@ -1816,12 +1803,10 @@ impl<RS: Read + Seek> Xlsx<RS> {
     /// ```
     ///
     pub fn table_names_in_sheet(&self, sheet_name: &str) -> Vec<&String> {
-        self.tables
-            .as_ref()
-            .expect("Tables must be loaded before they are referenced")
+        self.tables_metadata()
             .iter()
-            .filter(|(_, sheet, ..)| sheet == sheet_name)
-            .map(|(name, ..)| name)
+            .filter(|meta| meta.sheet_name == sheet_name)
+            .map(|meta| &meta.name)
             .collect()
     }
 
@@ -1880,21 +1865,18 @@ impl<RS: Read + Seek> Xlsx<RS> {
     /// ```
     ///
     pub fn table_by_name(&mut self, table_name: &str) -> Result<Table<Data>, XlsxError> {
-        let TableMetadata {
-            name,
-            sheet_name,
-            columns,
-            dimensions,
-        } = self.get_table_meta(table_name)?;
-        let tbl_rng = match dimensions {
-            Some(Dimensions { start, end }) => self.worksheet_range(&sheet_name)?.range(start, end),
+        let meta = self.get_table_meta(table_name)?;
+        let tbl_rng = match meta.data_dimensions() {
+            Some(Dimensions { start, end }) => {
+                self.worksheet_range(&meta.sheet_name)?.range(start, end)
+            }
             None => Range::empty(),
         };
 
         Ok(Table {
-            name,
-            sheet_name,
-            columns,
+            name: meta.name,
+            sheet_name: meta.sheet_name,
+            columns: meta.columns,
             data: tbl_rng,
         })
     }
@@ -1955,23 +1937,18 @@ impl<RS: Read + Seek> Xlsx<RS> {
     /// ```
     ///
     pub fn table_by_name_ref(&mut self, table_name: &str) -> Result<Table<DataRef<'_>>, XlsxError> {
-        let TableMetadata {
-            name,
-            sheet_name,
-            columns,
-            dimensions,
-        } = self.get_table_meta(table_name)?;
-        let tbl_rng = match dimensions {
-            Some(Dimensions { start, end }) => {
-                self.worksheet_range_ref(&sheet_name)?.range(start, end)
-            }
+        let meta = self.get_table_meta(table_name)?;
+        let tbl_rng = match meta.data_dimensions() {
+            Some(Dimensions { start, end }) => self
+                .worksheet_range_ref(&meta.sheet_name)?
+                .range(start, end),
             None => Range::empty(),
         };
 
         Ok(Table {
-            name,
-            sheet_name,
-            columns,
+            name: meta.name,
+            sheet_name: meta.sheet_name,
+            columns: meta.columns,
             data: tbl_rng,
         })
     }
@@ -2904,12 +2881,46 @@ impl<RS: Read + Seek> Xlsx<RS> {
     }
 }
 
-struct TableMetadata {
-    name: String,
-    sheet_name: String,
-    columns: Vec<String>,
-    /// `None` for tables with no data rows.
-    dimensions: Option<Dimensions>,
+/// Metadata of a worksheet table, matching the table's `xl/tables/*.xml` part.
+///
+/// The `dimensions` are the table's raw `ref` range covering the entire table:
+/// header rows, data rows, totals rows, and the insert-row placeholder. Use
+/// [`TableMetadata::data_dimensions()`] for the data rows only.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TableMetadata {
+    /// The table name (the `displayName` attribute).
+    pub name: String,
+    /// The name of the worksheet containing the table.
+    pub sheet_name: String,
+    /// The table's column names.
+    pub columns: Vec<String>,
+    /// The table's full `ref` range, untrimmed.
+    pub dimensions: Dimensions,
+    /// Number of header rows at the top of `ref` (`headerRowCount`, default 1).
+    pub header_row_count: u32,
+    /// Number of totals rows at the bottom of `ref` (`totalsRowCount`, default 0).
+    pub totals_row_count: u32,
+    /// Whether the last non-totals row of `ref` is the insert-row placeholder
+    /// (`insertRow`, present on tables with no data rows).
+    pub insert_row: bool,
+}
+
+impl TableMetadata {
+    /// The dimensions of the table's data rows: `ref` minus the header rows, totals
+    /// rows, and the insert-row placeholder.
+    ///
+    /// Returns `None` when the table has no data rows (e.g. a freshly-created empty
+    /// table) or the `ref` is malformed.
+    pub fn data_dimensions(&self) -> Option<Dimensions> {
+        let mut dims = self.dimensions;
+        dims.start.0 = dims.start.0.saturating_add(self.header_row_count);
+        dims.end.0 = dims.end.0.saturating_sub(self.totals_row_count);
+        if self.insert_row {
+            dims.end.0 = dims.end.0.saturating_sub(1);
+        }
+        let valid = dims.start.0 <= dims.end.0 && dims.start.1 <= dims.end.1;
+        valid.then_some(dims)
+    }
 }
 
 struct InnerTableMetadata {

@@ -856,6 +856,59 @@ fn table_empty_insert_row() {
     assert!(table.data().is_empty());
 }
 
+// The stored metadata matches the table XML: the raw `ref` range plus the
+// header/totals/insert-row shape, with the data range derived on demand.
+#[test]
+fn table_metadata_matches_xml_shape() {
+    let mut xls: Xlsx<_> = wb("table-empty-insert-row.xlsx");
+    xls.load_tables().unwrap();
+    let meta = xls
+        .tables_metadata()
+        .iter()
+        .find(|meta| meta.name == "EmptyTbl")
+        .unwrap();
+    assert_eq!(meta.sheet_name, "TableTest");
+    assert_eq!(meta.columns, ["Region", "Q1", "Q2", "Total"]);
+    // ref="A1:D2" insertRow="1", headerRowCount/totalsRowCount absent (defaults 1/0)
+    assert_eq!(
+        meta.dimensions,
+        Dimensions {
+            start: (0, 0),
+            end: (1, 3)
+        }
+    );
+    assert_eq!(meta.header_row_count, 1);
+    assert_eq!(meta.totals_row_count, 0);
+    assert!(meta.insert_row);
+    assert_eq!(meta.data_dimensions(), None);
+
+    let mut xls: Xlsx<_> = wb("temperature-table.xlsx");
+    xls.load_tables().unwrap();
+    let meta = xls
+        .tables_metadata()
+        .iter()
+        .find(|meta| meta.name == "Temperature")
+        .unwrap();
+    // ref="A1:B3", all shape attributes at their defaults
+    assert_eq!(
+        meta.dimensions,
+        Dimensions {
+            start: (0, 0),
+            end: (2, 1)
+        }
+    );
+    assert_eq!(meta.header_row_count, 1);
+    assert_eq!(meta.totals_row_count, 0);
+    assert!(!meta.insert_row);
+    assert_eq!(
+        meta.data_dimensions(),
+        Some(Dimensions {
+            start: (1, 0),
+            end: (2, 1)
+        })
+    );
+}
+
 // Degenerate `ref="A1:D1"` (header row only, no data rows): stripping the header row inverts
 // the dimensions (start > end).
 #[test]
