@@ -345,7 +345,9 @@ impl FromStr for CellErrorType {
     }
 }
 
-type Tables = Option<Vec<(String, String, Vec<String>, Dimensions)>>;
+/// Table dimensions are `None` when the table has no data rows (e.g. a freshly-created
+/// empty table whose ref covers only the header row and insert-row placeholder).
+type Tables = Option<Vec<(String, String, Vec<String>, Option<Dimensions>)>>;
 
 /// A struct representing xml zipped excel file
 /// Xlsx, Xlsm, Xlam
@@ -1393,14 +1395,18 @@ impl<RS: Read + Seek> Xlsx<RS> {
                 }
                 let mut dims = get_dimension(table_meta.ref_cells.as_bytes())?;
                 if table_meta.header_row_count != 0 {
-                    dims.start.0 += table_meta.header_row_count;
+                    dims.start.0 = dims.start.0.saturating_add(table_meta.header_row_count);
                 }
                 if table_meta.totals_row_count != 0 {
-                    dims.end.0 -= table_meta.header_row_count;
+                    dims.end.0 = dims.end.0.saturating_sub(table_meta.totals_row_count);
                 }
                 if table_meta.insert_row {
-                    dims.end.0 -= 1;
+                    dims.end.0 = dims.end.0.saturating_sub(1);
                 }
+                // Stripping header/totals/insert rows can leave a table with no data rows
+                // (inverted dimensions). Record it as having an empty data range.
+                let valid = dims.start.0 <= dims.end.0 && dims.start.1 <= dims.end.1;
+                let dims = valid.then_some(dims);
                 new_tables.push((
                     table_meta.display_name,
                     sheet_name.clone(),
@@ -1490,10 +1496,7 @@ impl<RS: Read + Seek> Xlsx<RS> {
         let name = match_table_meta.0.to_owned();
         let sheet_name = match_table_meta.1.clone();
         let columns = match_table_meta.2.clone();
-        let dimensions = Dimensions {
-            start: match_table_meta.3.start,
-            end: match_table_meta.3.end,
-        };
+        let dimensions = match_table_meta.3;
 
         Ok(TableMetadata {
             name,
@@ -1883,9 +1886,10 @@ impl<RS: Read + Seek> Xlsx<RS> {
             columns,
             dimensions,
         } = self.get_table_meta(table_name)?;
-        let Dimensions { start, end } = dimensions;
-        let range = self.worksheet_range(&sheet_name)?;
-        let tbl_rng = range.range(start, end);
+        let tbl_rng = match dimensions {
+            Some(Dimensions { start, end }) => self.worksheet_range(&sheet_name)?.range(start, end),
+            None => Range::empty(),
+        };
 
         Ok(Table {
             name,
@@ -1957,9 +1961,12 @@ impl<RS: Read + Seek> Xlsx<RS> {
             columns,
             dimensions,
         } = self.get_table_meta(table_name)?;
-        let Dimensions { start, end } = dimensions;
-        let range = self.worksheet_range_ref(&sheet_name)?;
-        let tbl_rng = range.range(start, end);
+        let tbl_rng = match dimensions {
+            Some(Dimensions { start, end }) => {
+                self.worksheet_range_ref(&sheet_name)?.range(start, end)
+            }
+            None => Range::empty(),
+        };
 
         Ok(Table {
             name,
@@ -2901,7 +2908,8 @@ struct TableMetadata {
     name: String,
     sheet_name: String,
     columns: Vec<String>,
-    dimensions: Dimensions,
+    /// `None` for tables with no data rows.
+    dimensions: Option<Dimensions>,
 }
 
 struct InnerTableMetadata {
