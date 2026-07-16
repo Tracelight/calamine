@@ -1866,10 +1866,11 @@ impl<RS: Read + Seek> Xlsx<RS> {
     ///
     pub fn table_by_name(&mut self, table_name: &str) -> Result<Table<Data>, XlsxError> {
         let meta = self.get_table_meta(table_name)?;
+        // Read the worksheet even when the table has no data rows, so a
+        // missing/corrupt parent sheet still surfaces as an error.
+        let range = self.worksheet_range(&meta.sheet_name)?;
         let tbl_rng = match meta.data_dimensions() {
-            Some(Dimensions { start, end }) => {
-                self.worksheet_range(&meta.sheet_name)?.range(start, end)
-            }
+            Some(Dimensions { start, end }) => range.range(start, end),
             None => Range::empty(),
         };
 
@@ -1938,10 +1939,11 @@ impl<RS: Read + Seek> Xlsx<RS> {
     ///
     pub fn table_by_name_ref(&mut self, table_name: &str) -> Result<Table<DataRef<'_>>, XlsxError> {
         let meta = self.get_table_meta(table_name)?;
+        // Read the worksheet even when the table has no data rows, so a
+        // missing/corrupt parent sheet still surfaces as an error.
+        let range = self.worksheet_range_ref(&meta.sheet_name)?;
         let tbl_rng = match meta.data_dimensions() {
-            Some(Dimensions { start, end }) => self
-                .worksheet_range_ref(&meta.sheet_name)?
-                .range(start, end),
+            Some(Dimensions { start, end }) => range.range(start, end),
             None => Range::empty(),
         };
 
