@@ -934,6 +934,66 @@ fn table_insert_row_degenerate() {
     assert!(table.data().is_empty());
 }
 
+// A table with data rows and a totals row (`ref="A1:D5" totalsRowCount="1"`): the totals
+// row is trimmed from the data range by subtracting `totalsRowCount` — the pre-fork code
+// subtracted `header_row_count` in this branch instead.
+#[test]
+fn table_totals_row() {
+    let mut xls: Xlsx<_> = wb("table-totals-row.xlsx");
+    xls.load_tables().unwrap();
+    let meta = xls
+        .tables_metadata()
+        .iter()
+        .find(|meta| meta.name == "TotalsTbl")
+        .unwrap();
+    assert_eq!(meta.columns, ["Item", "Qty", "Price", "Amount"]);
+    // ref="A1:D5" totalsRowCount="1", headerRowCount absent (default 1), no insertRow
+    assert_eq!(
+        meta.dimensions,
+        Dimensions {
+            start: (0, 0),
+            end: (4, 3)
+        }
+    );
+    assert_eq!(meta.header_row_count, 1);
+    assert_eq!(meta.totals_row_count, 1);
+    assert!(!meta.insert_row);
+    assert_eq!(
+        meta.data_dimensions(),
+        Some(Dimensions {
+            start: (1, 0),
+            end: (3, 3)
+        })
+    );
+
+    let table = xls.table_by_name("TotalsTbl").unwrap();
+    let data = table.data();
+    assert_eq!(data.height(), 3);
+    assert_eq!(data.get((0, 0)), Some(&String("Apples".to_owned())));
+    // The last data row is the third item, not the totals row.
+    assert_eq!(data.get((2, 0)), Some(&String("Cherries".to_owned())));
+}
+
+// Degenerate empty table with a totals row (`ref="A1:D3" insertRow="1" totalsRowCount="1"`):
+// header + insert-row placeholder + totals row, zero data rows.
+#[test]
+fn table_totals_insert_row_degenerate() {
+    let mut xls: Xlsx<_> = wb("table-totals-insert-row.xlsx");
+    xls.load_tables().unwrap();
+    let meta = xls
+        .tables_metadata()
+        .iter()
+        .find(|meta| meta.name == "TotalsEmptyTbl")
+        .unwrap();
+    assert_eq!(meta.totals_row_count, 1);
+    assert!(meta.insert_row);
+    assert_eq!(meta.data_dimensions(), None);
+
+    let table = xls.table_by_name("TotalsEmptyTbl").unwrap();
+    assert_eq!(table.columns(), ["Region", "Q1", "Q2", "Total"]);
+    assert!(table.data().is_empty());
+}
+
 #[test]
 fn date_xls() {
     let mut xls: Xls<_> = wb("date.xls");

@@ -2903,7 +2903,8 @@ pub struct TableMetadata {
     /// Number of totals rows at the bottom of `ref` (`totalsRowCount`, default 0).
     pub totals_row_count: u32,
     /// Whether the last non-totals row of `ref` is the insert-row placeholder
-    /// (`insertRow`, present on tables with no data rows).
+    /// (`insertRow`; Excel writes it for tables with no data rows, but it can
+    /// legally coexist with data rows in legacy files).
     pub insert_row: bool,
 }
 
