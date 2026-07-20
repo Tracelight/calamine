@@ -856,8 +856,6 @@ fn table_empty_insert_row() {
     assert!(table.data().is_empty());
 }
 
-// The stored metadata matches the table XML: the raw `ref` range plus the
-// header/totals/insert-row shape, with the data range derived on demand.
 #[test]
 fn table_metadata_matches_xml_shape() {
     let mut xls: Xlsx<_> = wb("table-empty-insert-row.xlsx");
