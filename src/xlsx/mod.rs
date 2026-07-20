@@ -2912,14 +2912,24 @@ impl TableMetadata {
     /// Returns `None` when the table has no data rows (e.g. a freshly-created empty
     /// table) or the `ref` is malformed.
     pub fn data_dimensions(&self) -> Option<Dimensions> {
-        let mut dims = self.dimensions;
-        dims.start.0 = dims.start.0.saturating_add(self.header_row_count);
-        dims.end.0 = dims.end.0.saturating_sub(self.totals_row_count);
-        if self.insert_row {
-            dims.end.0 = dims.end.0.saturating_sub(1);
+        let Dimensions { start, end } = self.dimensions;
+        if start.0 > end.0 || start.1 > end.1 {
+            return None;
         }
-        let valid = dims.start.0 <= dims.end.0 && dims.start.1 <= dims.end.1;
-        valid.then_some(dims)
+        let ref_rows = u64::from(end.0 - start.0) + 1;
+        let non_data_rows = u64::from(self.header_row_count)
+            + u64::from(self.totals_row_count)
+            + u64::from(self.insert_row);
+        if non_data_rows >= ref_rows {
+            return None;
+        }
+        Some(Dimensions {
+            start: (start.0 + self.header_row_count, start.1),
+            end: (
+                end.0 - self.totals_row_count - u32::from(self.insert_row),
+                end.1,
+            ),
+        })
     }
 }
 

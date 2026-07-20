@@ -993,13 +993,9 @@ fn table_totals_insert_row_degenerate() {
 }
 
 // Excel-written headerless empty table anchored at A1 (create table -> uncheck Header Row ->
-// cut/paste to A1; saved as `ref="A1:D1" headerRowCount="0" insertRow="1"`). With no header
-// rows the data range starts at row 0, so subtracting the insert row from the end row saturates
-// at 0 instead of underflowing past the start row and data_dimensions() derives a phantom
-// one-row range. The sheet is entirely blank, so slicing that range out of the sheet's empty
-// Range currently panics in `Range::range` inside `table_by_name`.
+// cut/paste to A1; saved as `ref="A1:D1" headerRowCount="0" insertRow="1"`): the insert-row
+// placeholder is the entire ref, so the table has no data rows and the sheet is blank.
 #[test]
-#[should_panic(expected = "chunk size must be non-zero")]
 fn table_headerless_empty() {
     let mut xls: Xlsx<_> = wb("table-headerless-empty.xlsx");
     xls.load_tables().unwrap();
@@ -1010,21 +1006,16 @@ fn table_headerless_empty() {
         .unwrap();
     assert_eq!(meta.header_row_count, 0);
     assert!(meta.insert_row);
-    assert_eq!(
-        meta.data_dimensions(),
-        Some(Dimensions {
-            start: (0, 0),
-            end: (0, 3)
-        })
-    );
+    assert_eq!(meta.data_dimensions(), None);
 
-    let _ = xls.table_by_name("HdrlessEmpty");
+    let table = xls.table_by_name("HdrlessEmpty").unwrap();
+    assert_eq!(table.columns(), ["Item", "Qty", "Price", "Amount"]);
+    assert!(table.data().is_empty());
 }
 
 // Same shape with a totals row (`ref="A1:D2" headerRowCount="0" insertRow="1"
-// totalsRowCount="1"`): the end-row subtraction saturates at 0 for both the totals and the
-// insert row, and the blank insert-row placeholder currently comes back as one row of table
-// data instead of None/empty.
+// totalsRowCount="1"`): the placeholder and the totals row consume the whole ref, so the
+// table has no data rows.
 #[test]
 fn table_headerless_totals() {
     let mut xls: Xlsx<_> = wb("table-headerless-totals.xlsx");
@@ -1037,17 +1028,11 @@ fn table_headerless_totals() {
     assert_eq!(meta.header_row_count, 0);
     assert_eq!(meta.totals_row_count, 1);
     assert!(meta.insert_row);
-    assert_eq!(
-        meta.data_dimensions(),
-        Some(Dimensions {
-            start: (0, 0),
-            end: (0, 3)
-        })
-    );
+    assert_eq!(meta.data_dimensions(), None);
 
     let table = xls.table_by_name("HdrlessTotals").unwrap();
     assert_eq!(table.columns(), ["Item", "Qty", "Price", "Amount"]);
-    assert_eq!(table.data().height(), 1);
+    assert!(table.data().is_empty());
 }
 
 #[test]
