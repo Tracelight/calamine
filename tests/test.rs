@@ -837,6 +837,204 @@ fn table_by_ref() {
     );
 }
 
+// A freshly-created empty Excel table (header row + insert-row placeholder, saved by Excel as
+// `ref="A1:D2" insertRow="1"`). Stripping the header row and the insert row leaves no data
+// rows, which must not panic or abort — the table should load with an empty data range.
+#[test]
+fn table_empty_insert_row() {
+    let mut xls: Xlsx<_> = wb("table-empty-insert-row.xlsx");
+    xls.load_tables().unwrap();
+    assert!(xls.table_names().contains(&&"EmptyTbl".to_string()));
+
+    let table = xls.table_by_name("EmptyTbl").unwrap();
+    assert_eq!(table.name(), "EmptyTbl");
+    assert_eq!(table.columns(), ["Region", "Q1", "Q2", "Total"]);
+    assert!(table.data().is_empty());
+    assert_eq!(table.data().start(), None);
+
+    let table = xls.table_by_name_ref("EmptyTbl").unwrap();
+    assert!(table.data().is_empty());
+}
+
+#[test]
+fn table_metadata_matches_xml_shape() {
+    let mut xls: Xlsx<_> = wb("table-empty-insert-row.xlsx");
+    xls.load_tables().unwrap();
+    let meta = xls
+        .tables_metadata()
+        .iter()
+        .find(|meta| meta.name == "EmptyTbl")
+        .unwrap();
+    assert_eq!(meta.sheet_name, "TableTest");
+    assert_eq!(meta.columns, ["Region", "Q1", "Q2", "Total"]);
+    // ref="A1:D2" insertRow="1", headerRowCount/totalsRowCount absent (defaults 1/0)
+    assert_eq!(
+        meta.dimensions,
+        Dimensions {
+            start: (0, 0),
+            end: (1, 3)
+        }
+    );
+    assert_eq!(meta.header_row_count, 1);
+    assert_eq!(meta.totals_row_count, 0);
+    assert!(meta.insert_row);
+    assert_eq!(meta.data_dimensions(), None);
+
+    let mut xls: Xlsx<_> = wb("temperature-table.xlsx");
+    xls.load_tables().unwrap();
+    let meta = xls
+        .tables_metadata()
+        .iter()
+        .find(|meta| meta.name == "Temperature")
+        .unwrap();
+    // ref="A1:B3", all shape attributes at their defaults
+    assert_eq!(
+        meta.dimensions,
+        Dimensions {
+            start: (0, 0),
+            end: (2, 1)
+        }
+    );
+    assert_eq!(meta.header_row_count, 1);
+    assert_eq!(meta.totals_row_count, 0);
+    assert!(!meta.insert_row);
+    assert_eq!(
+        meta.data_dimensions(),
+        Some(Dimensions {
+            start: (1, 0),
+            end: (2, 1)
+        })
+    );
+}
+
+// Degenerate `ref="A1:D1"` (header row only, no data rows): stripping the header row inverts
+// the dimensions (start > end).
+#[test]
+fn table_header_only() {
+    let mut xls: Xlsx<_> = wb("table-header-only.xlsx");
+    xls.load_tables().unwrap();
+
+    let table = xls.table_by_name("SalesTbl").unwrap();
+    assert_eq!(table.columns(), ["Item", "Qty", "Price", "Amount"]);
+    assert!(table.data().is_empty());
+}
+
+// Degenerate `ref="A1:D1" insertRow="1"`: after the header row is stripped, subtracting the
+// insert row underflows the end row (u32), which previously wrapped in release builds and
+// attempted a ~u32::MAX-row allocation.
+#[test]
+fn table_insert_row_degenerate() {
+    let mut xls: Xlsx<_> = wb("table-insert-row-degenerate.xlsx");
+    xls.load_tables().unwrap();
+
+    let table = xls.table_by_name("SalesTbl").unwrap();
+    assert_eq!(table.columns(), ["Item", "Qty", "Price", "Amount"]);
+    assert!(table.data().is_empty());
+}
+
+// A table with data rows and a totals row (`ref="A1:D5" totalsRowCount="1"`): the totals
+// row is trimmed from the data range by subtracting `totalsRowCount` — the pre-fork code
+// subtracted `header_row_count` in this branch instead.
+#[test]
+fn table_totals_row() {
+    let mut xls: Xlsx<_> = wb("table-totals-row.xlsx");
+    xls.load_tables().unwrap();
+    let meta = xls
+        .tables_metadata()
+        .iter()
+        .find(|meta| meta.name == "TotalsTbl")
+        .unwrap();
+    assert_eq!(meta.columns, ["Item", "Qty", "Price", "Amount"]);
+    // ref="A1:D5" totalsRowCount="1", headerRowCount absent (default 1), no insertRow
+    assert_eq!(
+        meta.dimensions,
+        Dimensions {
+            start: (0, 0),
+            end: (4, 3)
+        }
+    );
+    assert_eq!(meta.header_row_count, 1);
+    assert_eq!(meta.totals_row_count, 1);
+    assert!(!meta.insert_row);
+    assert_eq!(
+        meta.data_dimensions(),
+        Some(Dimensions {
+            start: (1, 0),
+            end: (3, 3)
+        })
+    );
+
+    let table = xls.table_by_name("TotalsTbl").unwrap();
+    let data = table.data();
+    assert_eq!(data.height(), 3);
+    assert_eq!(data.get((0, 0)), Some(&String("Apples".to_owned())));
+    // The last data row is the third item, not the totals row.
+    assert_eq!(data.get((2, 0)), Some(&String("Cherries".to_owned())));
+}
+
+// Degenerate empty table with a totals row (`ref="A1:D3" insertRow="1" totalsRowCount="1"`):
+// header + insert-row placeholder + totals row, zero data rows.
+#[test]
+fn table_totals_insert_row_degenerate() {
+    let mut xls: Xlsx<_> = wb("table-totals-insert-row.xlsx");
+    xls.load_tables().unwrap();
+    let meta = xls
+        .tables_metadata()
+        .iter()
+        .find(|meta| meta.name == "TotalsEmptyTbl")
+        .unwrap();
+    assert_eq!(meta.totals_row_count, 1);
+    assert!(meta.insert_row);
+    assert_eq!(meta.data_dimensions(), None);
+
+    let table = xls.table_by_name("TotalsEmptyTbl").unwrap();
+    assert_eq!(table.columns(), ["Region", "Q1", "Q2", "Total"]);
+    assert!(table.data().is_empty());
+}
+
+// Excel-written headerless empty table anchored at A1 (create table -> uncheck Header Row ->
+// cut/paste to A1; saved as `ref="A1:D1" headerRowCount="0" insertRow="1"`): the insert-row
+// placeholder is the entire ref, so the table has no data rows and the sheet is blank.
+#[test]
+fn table_headerless_empty() {
+    let mut xls: Xlsx<_> = wb("table-headerless-empty.xlsx");
+    xls.load_tables().unwrap();
+    let meta = xls
+        .tables_metadata()
+        .iter()
+        .find(|meta| meta.name == "HdrlessEmpty")
+        .unwrap();
+    assert_eq!(meta.header_row_count, 0);
+    assert!(meta.insert_row);
+    assert_eq!(meta.data_dimensions(), None);
+
+    let table = xls.table_by_name("HdrlessEmpty").unwrap();
+    assert_eq!(table.columns(), ["Item", "Qty", "Price", "Amount"]);
+    assert!(table.data().is_empty());
+}
+
+// Same shape with a totals row (`ref="A1:D2" headerRowCount="0" insertRow="1"
+// totalsRowCount="1"`): the placeholder and the totals row consume the whole ref, so the
+// table has no data rows.
+#[test]
+fn table_headerless_totals() {
+    let mut xls: Xlsx<_> = wb("table-headerless-totals.xlsx");
+    xls.load_tables().unwrap();
+    let meta = xls
+        .tables_metadata()
+        .iter()
+        .find(|meta| meta.name == "HdrlessTotals")
+        .unwrap();
+    assert_eq!(meta.header_row_count, 0);
+    assert_eq!(meta.totals_row_count, 1);
+    assert!(meta.insert_row);
+    assert_eq!(meta.data_dimensions(), None);
+
+    let table = xls.table_by_name("HdrlessTotals").unwrap();
+    assert_eq!(table.columns(), ["Item", "Qty", "Price", "Amount"]);
+    assert!(table.data().is_empty());
+}
+
 #[test]
 fn date_xls() {
     let mut xls: Xls<_> = wb("date.xls");
