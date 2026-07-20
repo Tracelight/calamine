@@ -1865,20 +1865,17 @@ impl<RS: Read + Seek> Xlsx<RS> {
     /// ```
     ///
     pub fn table_by_name(&mut self, table_name: &str) -> Result<Table<Data>, XlsxError> {
-        let meta = self.get_table_meta(table_name)?;
-        // Read the worksheet even when the table has no data rows, so a
-        // missing/corrupt parent sheet still surfaces as an error.
-        let range = self.worksheet_range(&meta.sheet_name)?;
-        let tbl_rng = match meta.data_dimensions() {
-            Some(Dimensions { start, end }) => range.range(start, end),
-            None => Range::empty(),
-        };
-
+        let table = self.table_by_name_ref(table_name)?;
+        let inner = table.data.inner.into_iter().map(|v| v.into()).collect();
         Ok(Table {
-            name: meta.name,
-            sheet_name: meta.sheet_name,
-            columns: meta.columns,
-            data: tbl_rng,
+            name: table.name,
+            sheet_name: table.sheet_name,
+            columns: table.columns,
+            data: Range {
+                start: table.data.start,
+                end: table.data.end,
+                inner,
+            },
         })
     }
 
