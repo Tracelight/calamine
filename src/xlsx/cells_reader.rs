@@ -36,7 +36,7 @@ struct ValueScratch {
     text: String,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq)]
 struct CellAttributes<'a> {
     reference: Option<&'a [u8]>,
     style_id: usize,
@@ -971,7 +971,79 @@ where
     }
 }
 
+/// Reads the `r`, `s` and `t` attributes straight out of a `<c>` tag's bytes.
+///
+/// Excel writes these as plain quoted ASCII, so the general attribute iterator's
+/// state machine is avoidable on what is the hottest loop in sheet parsing.
+/// Returns `None` for anything that does not fit that shape, so the caller can
+/// fall back to the general path rather than this having to reproduce all of it.
+///
+/// Values come back raw: neither this nor the general path expands entities.
+fn scan_cell_attributes(raw: &[u8]) -> Option<CellAttributes<'_>> {
+    let mut attrs = CellAttributes::default();
+    let mut i = 0;
+    loop {
+        while i < raw.len() && raw[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if i >= raw.len() {
+            return Some(attrs);
+        }
+        let key_start = i;
+        while i < raw.len() && raw[i] != b'=' && !raw[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        let key = &raw[key_start..i];
+        if key.is_empty() {
+            return None;
+        }
+        while i < raw.len() && raw[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if raw.get(i) != Some(&b'=') {
+            return None;
+        }
+        i += 1;
+        while i < raw.len() && raw[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        let quote = *raw.get(i)?;
+        if quote != b'"' && quote != b'\'' {
+            return None;
+        }
+        i += 1;
+        let value_start = i;
+        while i < raw.len() && raw[i] != quote {
+            i += 1;
+        }
+        if i >= raw.len() {
+            return None;
+        }
+        let value = &raw[value_start..i];
+        i += 1;
+        match key {
+            b"r" => attrs.reference = Some(value),
+            b"s" => {
+                let id = atoi_simd::parse::<usize>(value).unwrap_or(0);
+                attrs.style_id = id;
+                attrs.format_id = Some(id);
+            }
+            b"t" => attrs.cell_type = Some(value),
+            _ => (),
+        }
+    }
+}
+
 fn read_cell_attributes<'a>(e: &'a BytesStart<'a>) -> Result<CellAttributes<'a>, XlsxError> {
+    if let Some(attrs) = scan_cell_attributes(e.attributes_raw()) {
+        return Ok(attrs);
+    }
+    read_cell_attributes_general(e)
+}
+
+fn read_cell_attributes_general<'a>(
+    e: &'a BytesStart<'a>,
+) -> Result<CellAttributes<'a>, XlsxError> {
     let mut attrs = CellAttributes::default();
     for attr in unchecked_attributes(e) {
         match attr {
@@ -1301,5 +1373,76 @@ where
             Ok(Some(f))
         }
         _ => Err(XlsxError::UnexpectedNode("v, f, or is")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{read_cell_attributes_general, scan_cell_attributes};
+    use quick_xml::events::BytesStart;
+
+    /// Attribute lists as they appear on a `<c>` tag, well-formed and not.
+    const CASES: &[&str] = &[
+        "",
+        r#" r="B7" s="12" t="s""#,
+        r#" r="A1""#,
+        r#" t="str" r="E5" s="0""#,
+        r#" r='C3' cm="4" t='n'"#,
+        r#"  r = "D4"  "#,
+        r#" r="A&amp;1""#,
+        r#" s="99999" r="Z100""#,
+        r#" r="A1" unknown="x""#,
+        r#" r=A1"#,
+        " r",
+        r#" r="A1"#,
+        r#" ="A1""#,
+    ];
+
+    fn tag(attributes: &str) -> BytesStart<'static> {
+        // 1 is the length of the `c` element name the attributes follow.
+        BytesStart::from_content(format!("c{attributes}"), 1)
+    }
+
+    #[test]
+    fn agrees_with_the_general_path() {
+        for case in CASES {
+            let e = tag(case);
+            let Some(scanned) = scan_cell_attributes(e.attributes_raw()) else {
+                continue;
+            };
+            let general = read_cell_attributes_general(&e)
+                .unwrap_or_else(|err| panic!("general path rejected {case:?}: {err}"));
+            assert_eq!(scanned, general, "disagreement on {case:?}");
+        }
+    }
+
+    #[test]
+    fn scans_the_shapes_excel_writes() {
+        // Without this, agrees_with_the_general_path could pass by scanning nothing.
+        for case in [
+            r#" r="B7" s="12" t="s""#,
+            r#" r="A1""#,
+            r#" t="str" r="E5""#,
+        ] {
+            assert!(
+                scan_cell_attributes(tag(case).attributes_raw()).is_some(),
+                "{case:?}"
+            );
+        }
+        let attrs = scan_cell_attributes(br#" r="B7" s="12" t="s""#).unwrap();
+        assert_eq!(attrs.reference, Some(&b"B7"[..]));
+        assert_eq!(attrs.style_id, 12);
+        assert_eq!(attrs.format_id, Some(12));
+        assert_eq!(attrs.cell_type, Some(&b"s"[..]));
+    }
+
+    #[test]
+    fn defers_to_the_general_path_for_shapes_it_does_not_handle() {
+        for case in [r#" r=A1"#, " r", r#" r="A1"#, r#" ="A1""#] {
+            assert!(
+                scan_cell_attributes(tag(case).attributes_raw()).is_none(),
+                "{case:?}"
+            );
+        }
     }
 }
