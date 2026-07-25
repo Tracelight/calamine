@@ -28,8 +28,9 @@ use crate::{
 
 type FormulaMap = HashMap<(u32, u32), (i64, i64)>;
 
-/// Scratch buffers for reading a cell's `<v>` text, reused across cells so that
-/// reading a value allocates only when it yields an owned string.
+/// Scratch buffers for reading a cell's `<v>` and `<f>` text, reused across
+/// cells. The event buffer is shared because a cell's value and its formula are
+/// never read at the same time.
 #[derive(Debug, Default)]
 struct ValueScratch {
     event_buf: Vec<u8>,
@@ -287,7 +288,11 @@ where
                         self.cell_buf.clear();
                         match self.xml.read_event_into(&mut self.cell_buf) {
                             Ok(Event::Start(e)) => {
-                                let formula = read_formula(&mut self.xml, &e)?;
+                                let formula = read_formula(
+                                    &mut self.xml,
+                                    &e,
+                                    &mut self.value_scratch.event_buf,
+                                )?;
                                 if let Some(f) = formula.borrow() {
                                     value = Some(f.clone());
                                 }
@@ -1036,7 +1041,13 @@ where
                     )?;
                 }
                 b"f" => {
-                    formula = read_cell_full_formula(xml, shared_formula_parents, pos, &e)?;
+                    formula = read_cell_full_formula(
+                        xml,
+                        shared_formula_parents,
+                        pos,
+                        &e,
+                        &mut scratch.event_buf,
+                    )?;
                 }
                 _ => return Err(XlsxError::UnexpectedNode("v, f, or is")),
             },
@@ -1101,6 +1112,7 @@ fn read_cell_full_formula<RS>(
     shared_formula_parents: &mut HashMap<usize, (u32, u32)>,
     pos: (u32, u32),
     e: &BytesStart<'_>,
+    event_buf: &mut Vec<u8>,
 ) -> Result<Option<CellFormula>, XlsxError>
 where
     RS: Read + Seek,
@@ -1111,14 +1123,14 @@ where
         let data_table = parse_data_table_formula(e)?;
         // The dataTable <f> has no inner text; consume the (expand_empty_elements)
         // body + matching </f> so the cell loop stays aligned, same as the Text path.
-        read_formula(xml, e)?;
+        read_formula(xml, e, event_buf)?;
         return Ok(Some(CellFormula::DataTable(Box::new(data_table))));
     }
 
     let is_shared = matches!(formula_type, Some(b"shared"));
 
     if !is_shared {
-        let formula = read_formula(xml, e)?.unwrap_or_default();
+        let formula = read_formula(xml, e, event_buf)?.unwrap_or_default();
         return Ok(Some(CellFormula::Text(formula)));
     }
 
@@ -1134,7 +1146,7 @@ where
         }
     };
 
-    let formula = read_formula(xml, e)?.unwrap_or_default();
+    let formula = read_formula(xml, e, event_buf)?.unwrap_or_default();
     if !formula.is_empty() {
         shared_formula_parents.insert(shared_index, pos);
         return Ok(Some(CellFormula::Text(formula)));
@@ -1276,27 +1288,32 @@ fn read_v<'s>(
     }
 }
 
-fn read_formula<RS>(xml: &mut XlReader<RS>, e: &BytesStart) -> Result<Option<String>, XlsxError>
+fn read_formula<RS>(
+    xml: &mut XlReader<RS>,
+    e: &BytesStart,
+    event_buf: &mut Vec<u8>,
+) -> Result<Option<String>, XlsxError>
 where
     RS: Read + Seek,
 {
     match e.local_name().as_ref() {
         b"is" | b"v" => {
-            xml.read_to_end_into(e.name(), &mut Vec::new())?;
+            event_buf.clear();
+            xml.read_to_end_into(e.name(), event_buf)?;
             Ok(None)
         }
         b"f" => {
-            let mut f_buf = Vec::with_capacity(512);
+            event_buf.clear();
             let mut f = String::new();
             loop {
-                match xml.read_event_into(&mut f_buf)? {
+                match xml.read_event_into(event_buf)? {
                     Event::Text(t) => f.push_str(&t.xml10_content()?),
                     Event::GeneralRef(e) => unescape_entity_to_buffer(&e, &mut f)?,
                     Event::End(end) if end.name() == e.name() => break,
                     Event::Eof => return Err(XlsxError::XmlEof("f")),
                     _ => (),
                 }
-                f_buf.clear();
+                event_buf.clear();
             }
             Ok(Some(f))
         }
