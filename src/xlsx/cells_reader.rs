@@ -28,6 +28,14 @@ use crate::{
 
 type FormulaMap = HashMap<(u32, u32), (i64, i64)>;
 
+/// Scratch buffers for reading a cell's `<v>` text, reused across cells so that
+/// reading a value allocates only when it yields an owned string.
+#[derive(Debug, Default)]
+struct ValueScratch {
+    event_buf: Vec<u8>,
+    text: String,
+}
+
 #[derive(Debug, Default)]
 struct CellAttributes<'a> {
     reference: Option<&'a [u8]>,
@@ -78,6 +86,7 @@ where
     col_index: u32,
     buf: Vec<u8>,
     cell_buf: Vec<u8>,
+    value_scratch: ValueScratch,
     formulas: Vec<Option<(String, FormulaMap)>>,
 }
 
@@ -96,6 +105,7 @@ where
     col_index: u32,
     buf: Vec<u8>,
     cell_buf: Vec<u8>,
+    value_scratch: ValueScratch,
     shared_formula_parents: HashMap<usize, (u32, u32)>,
     phase: WorksheetItemReaderPhase,
     sheet_settings: SheetSettings,
@@ -163,6 +173,7 @@ where
             col_index: 0,
             buf: Vec::with_capacity(1024),
             cell_buf: Vec::with_capacity(1024),
+            value_scratch: ValueScratch::default(),
             formulas: Vec::with_capacity(1024),
         })
     }
@@ -214,6 +225,7 @@ where
                                     &e,
                                     cell_format,
                                     attrs.cell_type,
+                                    &mut self.value_scratch,
                                 )?;
                             }
                             Ok(Event::End(e)) if e.local_name().as_ref() == b"c" => break,
@@ -468,6 +480,7 @@ where
             col_index: 0,
             buf,
             cell_buf: Vec::with_capacity(1024),
+            value_scratch: ValueScratch::default(),
             shared_formula_parents: HashMap::new(),
             phase: WorksheetItemReaderPhase::BeforeSheetData,
             sheet_settings: SheetSettings::default(),
@@ -585,6 +598,7 @@ where
                         &mut self.shared_formula_parents,
                         &attrs,
                         pos,
+                        &mut self.value_scratch,
                     )?;
                     self.col_index += 1;
                     return Ok(Some(WorksheetItem::Cell(cell)));
@@ -992,6 +1006,7 @@ fn read_cell_full<'a, RS>(
     shared_formula_parents: &mut HashMap<usize, (u32, u32)>,
     attrs: &CellAttributes<'_>,
     pos: (u32, u32),
+    scratch: &mut ValueScratch,
 ) -> Result<Cell<'a, CellFull<'a>>, XlsxError>
 where
     RS: Read + Seek,
@@ -1010,7 +1025,15 @@ where
         match xml.read_event_into(cell_buf) {
             Ok(Event::Start(e)) => match e.local_name().as_ref() {
                 b"v" | b"is" => {
-                    value = read_value(strings, is_1904, xml, &e, cell_format, attrs.cell_type)?;
+                    value = read_value(
+                        strings,
+                        is_1904,
+                        xml,
+                        &e,
+                        cell_format,
+                        attrs.cell_type,
+                        scratch,
+                    )?;
                 }
                 b"f" => {
                     formula = read_cell_full_formula(xml, shared_formula_parents, pos, &e)?;
@@ -1039,6 +1062,7 @@ fn read_value<'s, RS>(
     e: &BytesStart<'_>,
     cell_format: Option<&CellFormat>,
     cell_type: Option<&[u8]>,
+    scratch: &mut ValueScratch,
 ) -> Result<DataRef<'s>, XlsxError>
 where
     RS: Read + Seek,
@@ -1050,22 +1074,22 @@ where
         }
         b"v" => {
             // value
-            let mut v = String::new();
-            let mut v_buf = Vec::new();
+            scratch.text.clear();
             loop {
-                v_buf.clear();
-                match xml.read_event_into(&mut v_buf)? {
-                    Event::Text(t) => v.push_str(&t.xml10_content()?),
-                    Event::GeneralRef(e) => unescape_entity_to_buffer(&e, &mut v)?,
+                scratch.event_buf.clear();
+                match xml.read_event_into(&mut scratch.event_buf)? {
+                    Event::Text(t) => scratch.text.push_str(&t.xml10_content()?),
+                    Event::GeneralRef(e) => unescape_entity_to_buffer(&e, &mut scratch.text)?,
                     Event::End(end) if end.name() == e.name() => break,
                     Event::Eof => return Err(XlsxError::XmlEof("v")),
                     _ => (),
                 }
             }
-            read_v(v, strings, cell_format, cell_type, is_1904)?
+            read_v(&mut scratch.text, strings, cell_format, cell_type, is_1904)?
         }
         b"f" => {
-            xml.read_to_end_into(e.name(), &mut Vec::new())?;
+            scratch.event_buf.clear();
+            xml.read_to_end_into(e.name(), &mut scratch.event_buf)?;
             DataRef::Empty
         }
         _n => return Err(XlsxError::UnexpectedNode("v, f, or is")),
@@ -1186,7 +1210,7 @@ fn parse_data_table_formula(e: &BytesStart<'_>) -> Result<DataTableFormula, Xlsx
 
 /// read the contents of a <v> cell
 fn read_v<'s>(
-    v: String,
+    v: &mut String,
     strings: &'s [String],
     cell_format: Option<&CellFormat>,
     cell_type: Option<&[u8]>,
@@ -1206,7 +1230,7 @@ fn read_v<'s>(
         }
         Some(b"b") => {
             // boolean
-            Ok(DataRef::Bool(v != "0"))
+            Ok(DataRef::Bool(v.as_str() != "0"))
         }
         Some(b"e") => {
             // error
@@ -1214,11 +1238,11 @@ fn read_v<'s>(
         }
         Some(b"d") => {
             // date
-            Ok(DataRef::DateTimeIso(v))
+            Ok(DataRef::DateTimeIso(std::mem::take(v)))
         }
         Some(b"str") => {
             // string
-            Ok(DataRef::String(v))
+            Ok(DataRef::String(std::mem::take(v)))
         }
         Some(b"n") => {
             // n - number
@@ -1233,9 +1257,10 @@ fn read_v<'s>(
         None => {
             // If type is not known, we try to parse as Float for utility, but fall back to
             // String if this fails.
-            v.parse()
-                .map(|n| format_excel_f64_ref(n, cell_format, is_1904))
-                .or(Ok(DataRef::String(v)))
+            match v.parse() {
+                Ok(n) => Ok(format_excel_f64_ref(n, cell_format, is_1904)),
+                Err(_) => Ok(DataRef::String(std::mem::take(v))),
+            }
         }
         Some(b"is") => {
             // this case should be handled in outer loop over cell elements, in which
