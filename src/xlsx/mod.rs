@@ -21,7 +21,7 @@ use std::str::FromStr;
 
 use log::warn;
 use quick_xml::events::attributes::{Attribute, Attributes};
-use quick_xml::events::Event;
+use quick_xml::events::{BytesStart, Event};
 use quick_xml::name::QName;
 use quick_xml::Reader as XmlReader;
 use zip::read::{ZipArchive, ZipFile};
@@ -3872,6 +3872,17 @@ fn xml_reader<'a, RS: Read + Seek>(
         Err(ZipError::FileNotFound) => None,
         Err(e) => Some(Err(e.into())),
     }
+}
+
+/// Attributes of `e` with duplicate-name checking disabled.
+///
+/// The check allocates a key-range vector per element, which on the sheet parts
+/// means per row, column and cell. Without it a duplicated attribute name is not
+/// an error; the caller simply sees both occurrences.
+pub(crate) fn unchecked_attributes<'a>(e: &'a BytesStart<'a>) -> Attributes<'a> {
+    let mut atts = e.attributes();
+    atts.with_checks(false);
+    atts
 }
 
 /// search through an Element's attributes for the named one

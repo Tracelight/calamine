@@ -14,7 +14,7 @@ use std::{
 
 use super::{
     get_attribute, get_dimension, get_row, get_row_column, parse_color_from_attrs, read_string,
-    replace_cell_names, Dimensions, Theme, XlReader,
+    replace_cell_names, unchecked_attributes, Dimensions, Theme, XlReader,
 };
 use crate::{
     datatype::{
@@ -176,7 +176,7 @@ where
             self.buf.clear();
             match self.xml.read_event_into(&mut self.buf) {
                 Ok(Event::Start(row_element)) if row_element.local_name().as_ref() == b"row" => {
-                    let attribute = get_attribute(row_element.attributes(), QName(b"r"))?;
+                    let attribute = get_attribute(unchecked_attributes(&row_element), QName(b"r"))?;
                     if let Some(range) = attribute {
                         let row = get_row(range)?;
                         self.row_index = row;
@@ -245,7 +245,7 @@ where
             self.buf.clear();
             match self.xml.read_event_into(&mut self.buf) {
                 Ok(Event::Start(row_element)) if row_element.local_name().as_ref() == b"row" => {
-                    let attribute = get_attribute(row_element.attributes(), QName(b"r"))?;
+                    let attribute = get_attribute(unchecked_attributes(&row_element), QName(b"r"))?;
                     if let Some(range) = attribute {
                         let row = get_row(range)?;
                         self.row_index = row;
@@ -280,30 +280,32 @@ where
                                     value = Some(f.clone());
                                 }
                                 if let Ok(Some(b"shared")) =
-                                    get_attribute(e.attributes(), QName(b"t"))
+                                    get_attribute(unchecked_attributes(&e), QName(b"t"))
                                 {
                                     // shared formula
                                     let mut offset_map: HashMap<(u32, u32), (i64, i64)> =
                                         HashMap::new();
                                     // shared index
-                                    let shared_index =
-                                        match get_attribute(e.attributes(), QName(b"si"))? {
-                                            Some(res) => match atoi_simd::parse::<usize>(res) {
-                                                Ok(res) => res,
-                                                Err(_) => {
-                                                    return Err(XlsxError::Unexpected(
-                                                        "si attribute must be a number",
-                                                    ));
-                                                }
-                                            },
-                                            None => {
+                                    let shared_index = match get_attribute(
+                                        unchecked_attributes(&e),
+                                        QName(b"si"),
+                                    )? {
+                                        Some(res) => match atoi_simd::parse::<usize>(res) {
+                                            Ok(res) => res,
+                                            Err(_) => {
                                                 return Err(XlsxError::Unexpected(
-                                                    "si attribute is mandatory if it is shared",
+                                                    "si attribute must be a number",
                                                 ));
                                             }
-                                        };
+                                        },
+                                        None => {
+                                            return Err(XlsxError::Unexpected(
+                                                "si attribute is mandatory if it is shared",
+                                            ));
+                                        }
+                                    };
                                     // shared reference
-                                    match get_attribute(e.attributes(), QName(b"ref"))? {
+                                    match get_attribute(unchecked_attributes(&e), QName(b"ref"))? {
                                         Some(res) => {
                                             // original reference formula
                                             let reference = get_dimension(res)?;
@@ -376,7 +378,7 @@ where
                 Ok(Event::Start(ref row_element))
                     if row_element.local_name().as_ref() == b"row" =>
                 {
-                    let attribute = get_attribute(row_element.attributes(), QName(b"r"))?;
+                    let attribute = get_attribute(unchecked_attributes(row_element), QName(b"r"))?;
                     if let Some(range) = attribute {
                         let row = get_row(range)?;
                         self.row_index = row;
@@ -545,7 +547,7 @@ where
                     if self.phase == WorksheetItemReaderPhase::InSheetData
                         && row_element.local_name().as_ref() == b"row" =>
                 {
-                    let attribute = get_attribute(row_element.attributes(), QName(b"r"))?;
+                    let attribute = get_attribute(unchecked_attributes(&row_element), QName(b"r"))?;
                     if let Some(range) = attribute {
                         let row = get_row(range)?;
                         self.row_index = row;
@@ -805,7 +807,7 @@ where
     let mut collapsed = false;
     let mut style = None;
 
-    for attr in col_e.attributes() {
+    for attr in unchecked_attributes(col_e) {
         let attr = attr.map_err(XlsxError::XmlAttr)?;
         match attr.key.as_ref() {
             b"min" => {
@@ -888,7 +890,7 @@ where
     let mut collapsed = false;
     let mut style = None;
 
-    for attr in row_e.attributes() {
+    for attr in unchecked_attributes(row_e) {
         let attr = attr.map_err(XlsxError::XmlAttr)?;
         match attr.key.as_ref() {
             b"r" => {
@@ -957,7 +959,7 @@ where
 
 fn read_cell_attributes<'a>(e: &'a BytesStart<'a>) -> Result<CellAttributes<'a>, XlsxError> {
     let mut attrs = CellAttributes::default();
-    for attr in e.attributes() {
+    for attr in unchecked_attributes(e) {
         match attr {
             Ok(Attribute {
                 key,
@@ -1079,7 +1081,7 @@ fn read_cell_full_formula<RS>(
 where
     RS: Read + Seek,
 {
-    let formula_type = get_attribute(e.attributes(), QName(b"t"))?;
+    let formula_type = get_attribute(unchecked_attributes(e), QName(b"t"))?;
 
     if let Some(b"dataTable") = formula_type {
         let data_table = parse_data_table_formula(e)?;
@@ -1096,7 +1098,7 @@ where
         return Ok(Some(CellFormula::Text(formula)));
     }
 
-    let shared_index = match get_attribute(e.attributes(), QName(b"si"))? {
+    let shared_index = match get_attribute(unchecked_attributes(e), QName(b"si"))? {
         Some(res) => match atoi_simd::parse::<usize>(res) {
             Ok(res) => res,
             Err(_) => return Err(XlsxError::Unexpected("si attribute must be a number")),
