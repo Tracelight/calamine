@@ -3853,6 +3853,8 @@ where
     Ok(persons)
 }
 
+const XML_BUF_CAPACITY: usize = 256 * 1024;
+
 fn xml_reader<'a, RS: Read + Seek>(
     zip: &'a mut ZipArchive<RS>,
     path: &str,
@@ -3861,7 +3863,7 @@ fn xml_reader<'a, RS: Read + Seek>(
 
     match zip.by_name(&zip_path) {
         Ok(f) => {
-            let mut r = XmlReader::from_reader(BufReader::new(f));
+            let mut r = XmlReader::from_reader(BufReader::with_capacity(XML_BUF_CAPACITY, f));
             let config = r.config_mut();
             config.check_end_names = false;
             config.trim_text(false);
