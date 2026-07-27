@@ -14,7 +14,7 @@ use std::{
 
 use super::{
     get_attribute, get_dimension, get_row, get_row_column, parse_color_from_attrs, read_string,
-    replace_cell_names, Dimensions, Theme, XlReader,
+    replace_cell_names, unchecked_attributes, Dimensions, Theme, XlReader,
 };
 use crate::{
     datatype::{
@@ -27,6 +27,15 @@ use crate::{
 };
 
 type FormulaMap = HashMap<(u32, u32), (i64, i64)>;
+
+/// Scratch buffers for reading a cell's `<v>` and `<f>` text, reused across
+/// cells. The event buffer is shared because a cell's value and its formula are
+/// never read at the same time.
+#[derive(Debug, Default)]
+struct ValueScratch {
+    event_buf: Vec<u8>,
+    text: String,
+}
 
 #[derive(Debug, Default)]
 struct CellAttributes<'a> {
@@ -78,6 +87,7 @@ where
     col_index: u32,
     buf: Vec<u8>,
     cell_buf: Vec<u8>,
+    value_scratch: ValueScratch,
     formulas: Vec<Option<(String, FormulaMap)>>,
 }
 
@@ -96,6 +106,7 @@ where
     col_index: u32,
     buf: Vec<u8>,
     cell_buf: Vec<u8>,
+    value_scratch: ValueScratch,
     shared_formula_parents: HashMap<usize, (u32, u32)>,
     phase: WorksheetItemReaderPhase,
     sheet_settings: SheetSettings,
@@ -163,6 +174,7 @@ where
             col_index: 0,
             buf: Vec::with_capacity(1024),
             cell_buf: Vec::with_capacity(1024),
+            value_scratch: ValueScratch::default(),
             formulas: Vec::with_capacity(1024),
         })
     }
@@ -176,7 +188,7 @@ where
             self.buf.clear();
             match self.xml.read_event_into(&mut self.buf) {
                 Ok(Event::Start(row_element)) if row_element.local_name().as_ref() == b"row" => {
-                    let attribute = get_attribute(row_element.attributes(), QName(b"r"))?;
+                    let attribute = get_attribute(unchecked_attributes(&row_element), QName(b"r"))?;
                     if let Some(range) = attribute {
                         let row = get_row(range)?;
                         self.row_index = row;
@@ -214,6 +226,7 @@ where
                                     &e,
                                     cell_format,
                                     attrs.cell_type,
+                                    &mut self.value_scratch,
                                 )?;
                             }
                             Ok(Event::End(e)) if e.local_name().as_ref() == b"c" => break,
@@ -245,7 +258,7 @@ where
             self.buf.clear();
             match self.xml.read_event_into(&mut self.buf) {
                 Ok(Event::Start(row_element)) if row_element.local_name().as_ref() == b"row" => {
-                    let attribute = get_attribute(row_element.attributes(), QName(b"r"))?;
+                    let attribute = get_attribute(unchecked_attributes(&row_element), QName(b"r"))?;
                     if let Some(range) = attribute {
                         let row = get_row(range)?;
                         self.row_index = row;
@@ -275,35 +288,41 @@ where
                         self.cell_buf.clear();
                         match self.xml.read_event_into(&mut self.cell_buf) {
                             Ok(Event::Start(e)) => {
-                                let formula = read_formula(&mut self.xml, &e)?;
+                                let formula = read_formula(
+                                    &mut self.xml,
+                                    &e,
+                                    &mut self.value_scratch.event_buf,
+                                )?;
                                 if let Some(f) = formula.borrow() {
                                     value = Some(f.clone());
                                 }
                                 if let Ok(Some(b"shared")) =
-                                    get_attribute(e.attributes(), QName(b"t"))
+                                    get_attribute(unchecked_attributes(&e), QName(b"t"))
                                 {
                                     // shared formula
                                     let mut offset_map: HashMap<(u32, u32), (i64, i64)> =
                                         HashMap::new();
                                     // shared index
-                                    let shared_index =
-                                        match get_attribute(e.attributes(), QName(b"si"))? {
-                                            Some(res) => match atoi_simd::parse::<usize>(res) {
-                                                Ok(res) => res,
-                                                Err(_) => {
-                                                    return Err(XlsxError::Unexpected(
-                                                        "si attribute must be a number",
-                                                    ));
-                                                }
-                                            },
-                                            None => {
+                                    let shared_index = match get_attribute(
+                                        unchecked_attributes(&e),
+                                        QName(b"si"),
+                                    )? {
+                                        Some(res) => match atoi_simd::parse::<usize>(res) {
+                                            Ok(res) => res,
+                                            Err(_) => {
                                                 return Err(XlsxError::Unexpected(
-                                                    "si attribute is mandatory if it is shared",
+                                                    "si attribute must be a number",
                                                 ));
                                             }
-                                        };
+                                        },
+                                        None => {
+                                            return Err(XlsxError::Unexpected(
+                                                "si attribute is mandatory if it is shared",
+                                            ));
+                                        }
+                                    };
                                     // shared reference
-                                    match get_attribute(e.attributes(), QName(b"ref"))? {
+                                    match get_attribute(unchecked_attributes(&e), QName(b"ref"))? {
                                         Some(res) => {
                                             // original reference formula
                                             let reference = get_dimension(res)?;
@@ -376,7 +395,7 @@ where
                 Ok(Event::Start(ref row_element))
                     if row_element.local_name().as_ref() == b"row" =>
                 {
-                    let attribute = get_attribute(row_element.attributes(), QName(b"r"))?;
+                    let attribute = get_attribute(unchecked_attributes(row_element), QName(b"r"))?;
                     if let Some(range) = attribute {
                         let row = get_row(range)?;
                         self.row_index = row;
@@ -466,6 +485,7 @@ where
             col_index: 0,
             buf,
             cell_buf: Vec::with_capacity(1024),
+            value_scratch: ValueScratch::default(),
             shared_formula_parents: HashMap::new(),
             phase: WorksheetItemReaderPhase::BeforeSheetData,
             sheet_settings: SheetSettings::default(),
@@ -545,7 +565,7 @@ where
                     if self.phase == WorksheetItemReaderPhase::InSheetData
                         && row_element.local_name().as_ref() == b"row" =>
                 {
-                    let attribute = get_attribute(row_element.attributes(), QName(b"r"))?;
+                    let attribute = get_attribute(unchecked_attributes(&row_element), QName(b"r"))?;
                     if let Some(range) = attribute {
                         let row = get_row(range)?;
                         self.row_index = row;
@@ -583,6 +603,7 @@ where
                         &mut self.shared_formula_parents,
                         &attrs,
                         pos,
+                        &mut self.value_scratch,
                     )?;
                     self.col_index += 1;
                     return Ok(Some(WorksheetItem::Cell(cell)));
@@ -805,7 +826,7 @@ where
     let mut collapsed = false;
     let mut style = None;
 
-    for attr in col_e.attributes() {
+    for attr in unchecked_attributes(col_e) {
         let attr = attr.map_err(XlsxError::XmlAttr)?;
         match attr.key.as_ref() {
             b"min" => {
@@ -888,7 +909,7 @@ where
     let mut collapsed = false;
     let mut style = None;
 
-    for attr in row_e.attributes() {
+    for attr in unchecked_attributes(row_e) {
         let attr = attr.map_err(XlsxError::XmlAttr)?;
         match attr.key.as_ref() {
             b"r" => {
@@ -957,7 +978,7 @@ where
 
 fn read_cell_attributes<'a>(e: &'a BytesStart<'a>) -> Result<CellAttributes<'a>, XlsxError> {
     let mut attrs = CellAttributes::default();
-    for attr in e.attributes() {
+    for attr in unchecked_attributes(e) {
         match attr {
             Ok(Attribute {
                 key,
@@ -990,6 +1011,7 @@ fn read_cell_full<'a, RS>(
     shared_formula_parents: &mut HashMap<usize, (u32, u32)>,
     attrs: &CellAttributes<'_>,
     pos: (u32, u32),
+    scratch: &mut ValueScratch,
 ) -> Result<Cell<'a, CellFull<'a>>, XlsxError>
 where
     RS: Read + Seek,
@@ -1008,10 +1030,24 @@ where
         match xml.read_event_into(cell_buf) {
             Ok(Event::Start(e)) => match e.local_name().as_ref() {
                 b"v" | b"is" => {
-                    value = read_value(strings, is_1904, xml, &e, cell_format, attrs.cell_type)?;
+                    value = read_value(
+                        strings,
+                        is_1904,
+                        xml,
+                        &e,
+                        cell_format,
+                        attrs.cell_type,
+                        scratch,
+                    )?;
                 }
                 b"f" => {
-                    formula = read_cell_full_formula(xml, shared_formula_parents, pos, &e)?;
+                    formula = read_cell_full_formula(
+                        xml,
+                        shared_formula_parents,
+                        pos,
+                        &e,
+                        &mut scratch.event_buf,
+                    )?;
                 }
                 _ => return Err(XlsxError::UnexpectedNode("v, f, or is")),
             },
@@ -1037,6 +1073,7 @@ fn read_value<'s, RS>(
     e: &BytesStart<'_>,
     cell_format: Option<&CellFormat>,
     cell_type: Option<&[u8]>,
+    scratch: &mut ValueScratch,
 ) -> Result<DataRef<'s>, XlsxError>
 where
     RS: Read + Seek,
@@ -1048,22 +1085,22 @@ where
         }
         b"v" => {
             // value
-            let mut v = String::new();
-            let mut v_buf = Vec::new();
+            scratch.text.clear();
             loop {
-                v_buf.clear();
-                match xml.read_event_into(&mut v_buf)? {
-                    Event::Text(t) => v.push_str(&t.xml10_content()?),
-                    Event::GeneralRef(e) => unescape_entity_to_buffer(&e, &mut v)?,
+                scratch.event_buf.clear();
+                match xml.read_event_into(&mut scratch.event_buf)? {
+                    Event::Text(t) => scratch.text.push_str(&t.xml10_content()?),
+                    Event::GeneralRef(e) => unescape_entity_to_buffer(&e, &mut scratch.text)?,
                     Event::End(end) if end.name() == e.name() => break,
                     Event::Eof => return Err(XlsxError::XmlEof("v")),
                     _ => (),
                 }
             }
-            read_v(v, strings, cell_format, cell_type, is_1904)?
+            read_v(&mut scratch.text, strings, cell_format, cell_type, is_1904)?
         }
         b"f" => {
-            xml.read_to_end_into(e.name(), &mut Vec::new())?;
+            scratch.event_buf.clear();
+            xml.read_to_end_into(e.name(), &mut scratch.event_buf)?;
             DataRef::Empty
         }
         _n => return Err(XlsxError::UnexpectedNode("v, f, or is")),
@@ -1075,28 +1112,29 @@ fn read_cell_full_formula<RS>(
     shared_formula_parents: &mut HashMap<usize, (u32, u32)>,
     pos: (u32, u32),
     e: &BytesStart<'_>,
+    event_buf: &mut Vec<u8>,
 ) -> Result<Option<CellFormula>, XlsxError>
 where
     RS: Read + Seek,
 {
-    let formula_type = get_attribute(e.attributes(), QName(b"t"))?;
+    let formula_type = get_attribute(unchecked_attributes(e), QName(b"t"))?;
 
     if let Some(b"dataTable") = formula_type {
         let data_table = parse_data_table_formula(e)?;
         // The dataTable <f> has no inner text; consume the (expand_empty_elements)
         // body + matching </f> so the cell loop stays aligned, same as the Text path.
-        read_formula(xml, e)?;
+        read_formula(xml, e, event_buf)?;
         return Ok(Some(CellFormula::DataTable(Box::new(data_table))));
     }
 
     let is_shared = matches!(formula_type, Some(b"shared"));
 
     if !is_shared {
-        let formula = read_formula(xml, e)?.unwrap_or_default();
+        let formula = read_formula(xml, e, event_buf)?.unwrap_or_default();
         return Ok(Some(CellFormula::Text(formula)));
     }
 
-    let shared_index = match get_attribute(e.attributes(), QName(b"si"))? {
+    let shared_index = match get_attribute(unchecked_attributes(e), QName(b"si"))? {
         Some(res) => match atoi_simd::parse::<usize>(res) {
             Ok(res) => res,
             Err(_) => return Err(XlsxError::Unexpected("si attribute must be a number")),
@@ -1108,7 +1146,7 @@ where
         }
     };
 
-    let formula = read_formula(xml, e)?.unwrap_or_default();
+    let formula = read_formula(xml, e, event_buf)?.unwrap_or_default();
     if !formula.is_empty() {
         shared_formula_parents.insert(shared_index, pos);
         return Ok(Some(CellFormula::Text(formula)));
@@ -1184,7 +1222,7 @@ fn parse_data_table_formula(e: &BytesStart<'_>) -> Result<DataTableFormula, Xlsx
 
 /// read the contents of a <v> cell
 fn read_v<'s>(
-    v: String,
+    v: &mut String,
     strings: &'s [String],
     cell_format: Option<&CellFormat>,
     cell_type: Option<&[u8]>,
@@ -1204,7 +1242,7 @@ fn read_v<'s>(
         }
         Some(b"b") => {
             // boolean
-            Ok(DataRef::Bool(v != "0"))
+            Ok(DataRef::Bool(v.as_str() != "0"))
         }
         Some(b"e") => {
             // error
@@ -1212,11 +1250,11 @@ fn read_v<'s>(
         }
         Some(b"d") => {
             // date
-            Ok(DataRef::DateTimeIso(v))
+            Ok(DataRef::DateTimeIso(std::mem::take(v)))
         }
         Some(b"str") => {
             // string
-            Ok(DataRef::String(v))
+            Ok(DataRef::String(std::mem::take(v)))
         }
         Some(b"n") => {
             // n - number
@@ -1231,9 +1269,10 @@ fn read_v<'s>(
         None => {
             // If type is not known, we try to parse as Float for utility, but fall back to
             // String if this fails.
-            v.parse()
-                .map(|n| format_excel_f64_ref(n, cell_format, is_1904))
-                .or(Ok(DataRef::String(v)))
+            match v.parse() {
+                Ok(n) => Ok(format_excel_f64_ref(n, cell_format, is_1904)),
+                Err(_) => Ok(DataRef::String(std::mem::take(v))),
+            }
         }
         Some(b"is") => {
             // this case should be handled in outer loop over cell elements, in which
@@ -1249,27 +1288,32 @@ fn read_v<'s>(
     }
 }
 
-fn read_formula<RS>(xml: &mut XlReader<RS>, e: &BytesStart) -> Result<Option<String>, XlsxError>
+fn read_formula<RS>(
+    xml: &mut XlReader<RS>,
+    e: &BytesStart,
+    event_buf: &mut Vec<u8>,
+) -> Result<Option<String>, XlsxError>
 where
     RS: Read + Seek,
 {
     match e.local_name().as_ref() {
         b"is" | b"v" => {
-            xml.read_to_end_into(e.name(), &mut Vec::new())?;
+            event_buf.clear();
+            xml.read_to_end_into(e.name(), event_buf)?;
             Ok(None)
         }
         b"f" => {
-            let mut f_buf = Vec::with_capacity(512);
+            event_buf.clear();
             let mut f = String::new();
             loop {
-                match xml.read_event_into(&mut f_buf)? {
+                match xml.read_event_into(event_buf)? {
                     Event::Text(t) => f.push_str(&t.xml10_content()?),
                     Event::GeneralRef(e) => unescape_entity_to_buffer(&e, &mut f)?,
                     Event::End(end) if end.name() == e.name() => break,
                     Event::Eof => return Err(XlsxError::XmlEof("f")),
                     _ => (),
                 }
-                f_buf.clear();
+                event_buf.clear();
             }
             Ok(Some(f))
         }
