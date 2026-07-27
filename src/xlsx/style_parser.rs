@@ -872,12 +872,27 @@ pub fn parse_fill_with_theme<RS: BufRead>(
 
 pub fn parse_border_with_theme<RS: BufRead>(
     xml: &mut Reader<RS>,
-    _start_elem: &BytesStart,
+    start_elem: &BytesStart,
     theme: Option<&Theme>,
     indexed_colors: Option<&[Color]>,
 ) -> Result<Borders, XlsxError> {
     let mut borders = Borders::new();
     let mut buf = Vec::new();
+    let mut diagonal_down = false;
+    let mut diagonal_up = false;
+
+    for attr in start_elem.attributes() {
+        let attr = attr?;
+        match attr.key.as_ref() {
+            b"diagonalDown" => {
+                diagonal_down = matches!(attr.value.as_ref(), b"1" | b"true");
+            }
+            b"diagonalUp" => {
+                diagonal_up = matches!(attr.value.as_ref(), b"1" | b"true");
+            }
+            _ => {}
+        }
+    }
 
     loop {
         buf.clear();
@@ -941,13 +956,11 @@ pub fn parse_border_with_theme<RS: BufRead>(
                         b"top" => borders.top = border,
                         b"bottom" => borders.bottom = border,
                         b"diagonal" => {
-                            for attr in e.attributes() {
-                                let attr = attr?;
-                                if attr.key.as_ref() == b"diagonalDown" {
-                                    borders.diagonal_down = border.clone();
-                                } else if attr.key.as_ref() == b"diagonalUp" {
-                                    borders.diagonal_up = border.clone();
-                                }
+                            if diagonal_down {
+                                borders.diagonal_down = border.clone();
+                            }
+                            if diagonal_up {
+                                borders.diagonal_up = border;
                             }
                         }
                         _ => {}
@@ -988,13 +1001,11 @@ pub fn parse_border_with_theme<RS: BufRead>(
                         b"top" => borders.top = border,
                         b"bottom" => borders.bottom = border,
                         b"diagonal" => {
-                            for attr in e.attributes() {
-                                let attr = attr?;
-                                if attr.key.as_ref() == b"diagonalDown" {
-                                    borders.diagonal_down = border.clone();
-                                } else if attr.key.as_ref() == b"diagonalUp" {
-                                    borders.diagonal_up = border.clone();
-                                }
+                            if diagonal_down {
+                                borders.diagonal_down = border.clone();
+                            }
+                            if diagonal_up {
+                                borders.diagonal_up = border;
                             }
                         }
                         _ => {}

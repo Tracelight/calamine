@@ -2968,6 +2968,34 @@ fn test_border_colors() {
 }
 
 #[test]
+fn test_diagonal_borders() {
+    let mut xlsx: Xlsx<_> = wb("diagonal_borders.xlsx");
+    let styles = xlsx.worksheet_style("Sheet1").unwrap();
+
+    let borders = |row| styles.get((row, 0)).unwrap().borders.as_ref().unwrap();
+
+    let down = borders(0);
+    assert_eq!(down.diagonal_down.style, BorderStyle::Thin);
+    assert_eq!(down.diagonal_down.color, Some(Color::rgb(255, 0, 0)));
+    assert_eq!(down.diagonal_up.style, BorderStyle::None);
+
+    let up = borders(1);
+    assert_eq!(up.diagonal_down.style, BorderStyle::None);
+    assert_eq!(up.diagonal_up.style, BorderStyle::Medium);
+    assert_eq!(up.diagonal_up.color, Some(Color::rgb(0, 255, 0)));
+
+    let both = borders(2);
+    assert_eq!(both.diagonal_down.style, BorderStyle::Dashed);
+    assert_eq!(both.diagonal_up.style, BorderStyle::Dashed);
+    assert_eq!(both.diagonal_down.color, Some(Color::rgb(0, 0, 255)));
+    assert_eq!(both.diagonal_up.color, Some(Color::rgb(0, 0, 255)));
+
+    let disabled = borders(3);
+    assert_eq!(disabled.diagonal_down.style, BorderStyle::None);
+    assert_eq!(disabled.diagonal_up.style, BorderStyle::None);
+}
+
+#[test]
 fn test_problematic_formats() {
     let mut xlsx: Xlsx<_> = wb("problematic_formats.xlsx");
     let range = xlsx.worksheet_range("Sheet1").unwrap();
