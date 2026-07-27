@@ -7,6 +7,7 @@
 mod cells_reader;
 mod charts;
 mod comments;
+mod conditional_format;
 mod style_parser;
 mod theme;
 
@@ -2148,8 +2149,8 @@ impl<RS: Read + Seek> Xlsx<RS> {
 
     /// Get the worksheet item reader for a worksheet.
     ///
-    /// This reader streams worksheet layout metadata, cells, and merged regions
-    /// from a single worksheet XML pass.
+    /// This reader streams worksheet layout metadata, cells, merged regions,
+    /// and conditional formatting from a single worksheet XML pass.
     pub fn worksheet_items_reader<'a>(
         &'a mut self,
         name: &str,

@@ -5,10 +5,12 @@
 use calamine::vba::Reference;
 use calamine::Data::{Bool, DateTime, DateTimeIso, DurationIso, Empty, Error, Float, Int, String};
 use calamine::{
-    open_workbook, open_workbook_auto, BorderStyle, CellFormula, Color, DataRef, DataTableFormula,
-    DataTableKind, DataTableOrientation, DataType, DefinedName, Dimensions, ExcelDateTime,
-    ExcelDateTimeType, HeaderRow, HorizontalAlignment, Ods, Range, Reader, ReaderRef, Sheet,
-    SheetType, SheetVisible, UnderlineStyle, VerticalAlignment, WorksheetItem, Xls, Xlsb, Xlsx,
+    open_workbook, open_workbook_auto, BorderStyle, CellFormula, Color, ConditionalFormatOperator,
+    ConditionalFormatRuleType, ConditionalFormatTimePeriod, ConditionalFormatValueKind, DataRef,
+    DataTableFormula, DataTableKind, DataTableOrientation, DataType, DefinedName, Dimensions,
+    ExcelDateTime, ExcelDateTimeType, HeaderRow, HorizontalAlignment, Ods, Range, Reader,
+    ReaderRef, Sheet, SheetType, SheetVisible, UnderlineStyle, VerticalAlignment, WorksheetItem,
+    Xls, Xlsb, Xlsx,
 };
 use calamine::{CellErrorType::*, Data};
 use rstest::rstest;
@@ -3405,5 +3407,227 @@ fn test_worksheet_charts_xml_entity_handling() {
                 y_values_ref: None,
             }],
         }]
+    );
+}
+
+fn conditional_operator_name(operator: &ConditionalFormatOperator) -> &str {
+    match operator {
+        ConditionalFormatOperator::LessThan => "lessThan",
+        ConditionalFormatOperator::LessThanOrEqual => "lessThanOrEqual",
+        ConditionalFormatOperator::Equal => "equal",
+        ConditionalFormatOperator::NotEqual => "notEqual",
+        ConditionalFormatOperator::GreaterThanOrEqual => "greaterThanOrEqual",
+        ConditionalFormatOperator::GreaterThan => "greaterThan",
+        ConditionalFormatOperator::Between => "between",
+        ConditionalFormatOperator::NotBetween => "notBetween",
+        ConditionalFormatOperator::ContainsText => "containsText",
+        ConditionalFormatOperator::NotContains => "notContains",
+        ConditionalFormatOperator::BeginsWith => "beginsWith",
+        ConditionalFormatOperator::EndsWith => "endsWith",
+        ConditionalFormatOperator::Other(value) => value,
+    }
+}
+
+fn conditional_time_period_name(period: &ConditionalFormatTimePeriod) -> &str {
+    match period {
+        ConditionalFormatTimePeriod::Today => "today",
+        ConditionalFormatTimePeriod::Yesterday => "yesterday",
+        ConditionalFormatTimePeriod::Tomorrow => "tomorrow",
+        ConditionalFormatTimePeriod::Last7Days => "last7Days",
+        ConditionalFormatTimePeriod::ThisWeek => "thisWeek",
+        ConditionalFormatTimePeriod::LastWeek => "lastWeek",
+        ConditionalFormatTimePeriod::NextWeek => "nextWeek",
+        ConditionalFormatTimePeriod::ThisMonth => "thisMonth",
+        ConditionalFormatTimePeriod::LastMonth => "lastMonth",
+        ConditionalFormatTimePeriod::NextMonth => "nextMonth",
+        ConditionalFormatTimePeriod::Other(value) => value,
+    }
+}
+
+fn conditional_value_kind_name(kind: &ConditionalFormatValueKind) -> &str {
+    match kind {
+        ConditionalFormatValueKind::Missing => "missing",
+        ConditionalFormatValueKind::Min => "min",
+        ConditionalFormatValueKind::Max => "max",
+        ConditionalFormatValueKind::AutoMin => "autoMin",
+        ConditionalFormatValueKind::AutoMax => "autoMax",
+        ConditionalFormatValueKind::Number => "num",
+        ConditionalFormatValueKind::Percent => "percent",
+        ConditionalFormatValueKind::Percentile => "percentile",
+        ConditionalFormatValueKind::Formula => "formula",
+        ConditionalFormatValueKind::Other(value) => value,
+    }
+}
+
+fn a1_reference((row, column): (u32, u32)) -> std::string::String {
+    let mut column = column + 1;
+    let mut letters = Vec::new();
+    while column > 0 {
+        let remainder = (column - 1) % 26;
+        letters.push((b'A' + remainder as u8) as char);
+        column = (column - 1) / 26;
+    }
+    letters.reverse();
+    format!(
+        "{}{row}",
+        letters.into_iter().collect::<std::string::String>(),
+        row = row + 1
+    )
+}
+
+fn a1_range(range: Dimensions) -> std::string::String {
+    let start = a1_reference(range.start);
+    let end = a1_reference(range.end);
+    if start == end {
+        start
+    } else {
+        format!("{start}:{end}")
+    }
+}
+
+// One hand-built sheet keeps core, malformed, and x14-mirrored records in a
+// single behavioural snapshot.
+fn conditional_formatting_snapshot(file: &str, sheet: &str) -> std::string::String {
+    use std::fmt::Write as _;
+
+    let mut xlsx: Xlsx<_> = wb(file);
+    let mut reader = xlsx.worksheet_items_reader(sheet).unwrap();
+    let mut out = std::string::String::new();
+    while let Some(item) = reader.next_item().unwrap() {
+        match item {
+            WorksheetItem::MergedRegion(range) => {
+                writeln!(out, "merged {}", a1_range(range)).unwrap();
+            }
+            WorksheetItem::ConditionalFormatting(block) => {
+                write!(out, "conditional").unwrap();
+                if block.pivot {
+                    write!(out, " pivot").unwrap();
+                }
+                for range in block.ranges {
+                    write!(out, " {}", a1_range(range)).unwrap();
+                }
+                writeln!(out).unwrap();
+
+                for rule in block.rules {
+                    write!(out, "  {}", rule.rule_type).unwrap();
+                    if let Some(priority) = rule.priority {
+                        write!(out, " priority={priority}").unwrap();
+                    }
+                    if let Some(dxf_id) = rule.dxf_id {
+                        write!(out, " dxf={dxf_id}").unwrap();
+                    }
+                    if rule.stop_if_true {
+                        write!(out, " stopIfTrue").unwrap();
+                    }
+                    if let Some(operator) = &rule.operator {
+                        write!(out, " operator={}", conditional_operator_name(operator)).unwrap();
+                    }
+                    if let Some(text) = &rule.text {
+                        write!(out, " text={text}").unwrap();
+                    }
+                    if let Some(period) = &rule.time_period {
+                        write!(out, " timePeriod={}", conditional_time_period_name(period))
+                            .unwrap();
+                    }
+                    if matches!(rule.rule_type, ConditionalFormatRuleType::Top10) {
+                        if let Some(rank) = rule.rank {
+                            write!(out, " rank={rank}").unwrap();
+                        }
+                        write!(out, " percent={} bottom={}", rule.rank_percent, rule.bottom)
+                            .unwrap();
+                    }
+                    if matches!(rule.rule_type, ConditionalFormatRuleType::AboveAverage) {
+                        write!(
+                            out,
+                            " aboveAverage={} equalAverage={}",
+                            rule.above_average, rule.equal_average
+                        )
+                        .unwrap();
+                        if let Some(std_dev) = rule.std_dev {
+                            write!(out, " stdDev={std_dev}").unwrap();
+                        }
+                    }
+                    if matches!(rule.rule_type, ConditionalFormatRuleType::DataBar) {
+                        write!(
+                            out,
+                            " length={}..{} showValue={}",
+                            rule.min_length, rule.max_length, rule.show_value
+                        )
+                        .unwrap();
+                    }
+                    if matches!(rule.rule_type, ConditionalFormatRuleType::IconSet) {
+                        if let Some(icon_set) = &rule.icon_set {
+                            write!(out, " icons={icon_set}").unwrap();
+                        }
+                        write!(
+                            out,
+                            " percent={} reverse={} showValue={}",
+                            rule.icon_percent, rule.reverse_icons, rule.show_value
+                        )
+                        .unwrap();
+                    }
+                    writeln!(out).unwrap();
+
+                    for formula in rule.formulas {
+                        writeln!(out, "    formula: {formula}").unwrap();
+                    }
+                    if !rule.values.is_empty() {
+                        write!(out, "    values:").unwrap();
+                        for value in rule.values {
+                            write!(out, " {}", conditional_value_kind_name(&value.kind)).unwrap();
+                            if let Some(value) = value.value {
+                                write!(out, "({value})").unwrap();
+                            }
+                            if !value.inclusive {
+                                write!(out, "[exclusive]").unwrap();
+                            }
+                        }
+                        writeln!(out).unwrap();
+                    }
+                    if !rule.colors.is_empty() {
+                        write!(out, "    colors:").unwrap();
+                        for color in rule.colors {
+                            match color {
+                                Some(color) => write!(out, " {color}").unwrap(),
+                                None => write!(out, " unresolved").unwrap(),
+                            }
+                        }
+                        writeln!(out).unwrap();
+                    }
+                }
+            }
+            _ => (),
+        }
+    }
+    out
+}
+
+#[test]
+fn conditional_formatting_streams_core_rules_without_consuming_merges_or_x14_mirrors() {
+    assert_eq!(
+        conditional_formatting_snapshot("conditional_formatting.xlsx", "CF"),
+        r#"merged A5:B5
+conditional B1:B100 D1:D100
+  expression priority=2 dxf=3 stopIfTrue
+    formula: AND($A1="Total",B1<0)
+  cellIs priority=1 dxf=1 operator=between
+    formula: C1*0.8
+    formula: C1*1.2
+conditional E1:E100
+  colorScale priority=3
+    values: min percentile(50) max
+    colors: #63BE7B #FF0000 #F8696B
+conditional F1:F100
+  iconSet priority=4 icons=3Arrows percent=true reverse=true showValue=false
+    values: percent(0) percent(33)[exclusive] percent(67)
+  duplicateValues priority=5 dxf=0
+  notAThing priority=6 dxf=2
+  containsText priority=7 dxf=4 operator=containsText text=A&B <raw>
+    formula: NOT(ISERROR(SEARCH("A&B <raw>",F1)))
+conditional G1:G100
+  dataBar priority=8 length=10..90 showValue=false
+    values: min max
+    colors: #638EC6
+"#
     );
 }
