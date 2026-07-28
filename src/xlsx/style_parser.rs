@@ -583,7 +583,7 @@ fn parse_color_with_source(
     Ok(None)
 }
 
-fn parse_color_with_theme(
+pub(crate) fn parse_color_with_theme(
     attributes: &[Attribute],
     theme_data: Option<&Theme>,
     indexed_colors: Option<&[Color]>,

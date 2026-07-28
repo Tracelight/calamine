@@ -14,7 +14,7 @@ use std::{
 
 use super::{
     get_attribute, get_dimension, get_row, get_row_column, parse_color_from_attrs, read_string,
-    replace_cell_names, unchecked_attributes, Dimensions, Theme, XlReader,
+    replace_cell_names, unchecked_attributes, ColorPalette, Dimensions, Theme, XlReader,
 };
 use crate::{
     datatype::{
@@ -100,7 +100,7 @@ where
     strings: &'a [String],
     formats: &'a [CellFormat],
     styles: &'a [Style],
-    theme: Option<&'a Theme>,
+    palette: ColorPalette<'a>,
     is_1904: bool,
     row_index: u32,
     col_index: u32,
@@ -452,11 +452,32 @@ where
 {
     /// Create a new XLSX worksheet item reader.
     pub fn new(
-        mut xml: XlReader<'a, RS>,
+        xml: XlReader<'a, RS>,
         strings: &'a [String],
         formats: &'a [CellFormat],
         styles: &'a [Style],
         theme: Option<&'a Theme>,
+        is_1904: bool,
+    ) -> Result<Self, XlsxError> {
+        Self::new_with_palette(
+            xml,
+            strings,
+            formats,
+            styles,
+            ColorPalette {
+                theme,
+                indexed: None,
+            },
+            is_1904,
+        )
+    }
+
+    pub(crate) fn new_with_palette(
+        mut xml: XlReader<'a, RS>,
+        strings: &'a [String],
+        formats: &'a [CellFormat],
+        styles: &'a [Style],
+        palette: ColorPalette<'a>,
         is_1904: bool,
     ) -> Result<Self, XlsxError> {
         let mut buf = Vec::with_capacity(1024);
@@ -479,7 +500,7 @@ where
             strings,
             formats,
             styles,
-            theme,
+            palette,
             is_1904,
             row_index: 0,
             col_index: 0,
@@ -512,7 +533,7 @@ where
                         &mut self.xml,
                         &mut self.cell_buf,
                         &mut self.sheet_settings,
-                        self.theme,
+                        self.palette,
                     )?;
                 }
                 Ok(Event::Start(e))
@@ -649,7 +670,7 @@ fn read_sheet_pr<RS>(
     xml: &mut XlReader<'_, RS>,
     buf: &mut Vec<u8>,
     sheet_settings: &mut SheetSettings,
-    theme: Option<&Theme>,
+    palette: ColorPalette<'_>,
 ) -> Result<(), XlsxError>
 where
     RS: Read + Seek,
@@ -658,7 +679,7 @@ where
         buf.clear();
         match xml.read_event_into(buf) {
             Ok(Event::Start(e) | Event::Empty(e)) if e.local_name().as_ref() == b"tabColor" => {
-                sheet_settings.tab_color = parse_color_from_attrs(&e.attributes(), theme);
+                sheet_settings.tab_color = parse_color_from_attrs(&e.attributes(), palette);
             }
             Ok(Event::End(e)) if e.local_name().as_ref() == b"sheetPr" => break,
             Ok(Event::Eof) => return Err(XlsxError::XmlEof("sheetPr")),

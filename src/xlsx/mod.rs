@@ -79,77 +79,17 @@ fn parse_hex_byte(bytes: &[u8]) -> Option<u8> {
     Some(hi * 16 + lo)
 }
 
-fn parse_color_from_attrs(attributes: &Attributes, theme: Option<&Theme>) -> Option<Color> {
-    let mut rgb_bytes: Option<Cow<'_, [u8]>> = None;
-    let mut theme_idx: Option<u8> = None;
-    let mut tint: f64 = 0.0;
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct ColorPalette<'a> {
+    pub(crate) theme: Option<&'a Theme>,
+    pub(crate) indexed: Option<&'a [Color]>,
+}
 
-    for attr in attributes.clone().flatten() {
-        match attr.key.as_ref() {
-            b"rgb" => rgb_bytes = Some(attr.value),
-            b"theme" => {
-                if let Ok(s) = std::str::from_utf8(&attr.value) {
-                    theme_idx = s.parse().ok();
-                }
-            }
-            b"tint" => {
-                if let Ok(s) = std::str::from_utf8(&attr.value) {
-                    tint = s.parse().unwrap_or(0.0);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    if let Some(bytes) = rgb_bytes {
-        let bytes_slice: &[u8] = if bytes.first() == Some(&b'#') {
-            &bytes[1..]
-        } else {
-            &bytes
-        };
-        if bytes_slice.len() == 8 {
-            if let (Some(a), Some(r), Some(g), Some(b)) = (
-                parse_hex_byte(&bytes_slice[0..2]),
-                parse_hex_byte(&bytes_slice[2..4]),
-                parse_hex_byte(&bytes_slice[4..6]),
-                parse_hex_byte(&bytes_slice[6..8]),
-            ) {
-                let color = Color::new(a, r, g, b);
-                return Some(if tint != 0.0 {
-                    color.with_tint(tint)
-                } else {
-                    color
-                });
-            }
-        } else if bytes_slice.len() == 6 {
-            if let (Some(r), Some(g), Some(b)) = (
-                parse_hex_byte(&bytes_slice[0..2]),
-                parse_hex_byte(&bytes_slice[2..4]),
-                parse_hex_byte(&bytes_slice[4..6]),
-            ) {
-                let color = Color::rgb(r, g, b);
-                return Some(if tint != 0.0 {
-                    color.with_tint(tint)
-                } else {
-                    color
-                });
-            }
-        }
-    }
-
-    if let Some(idx) = theme_idx {
-        if let Some(theme_data) = theme {
-            if let Some(color) = theme_data.color(idx as usize) {
-                return Some(if tint != 0.0 {
-                    color.with_tint(tint)
-                } else {
-                    color
-                });
-            }
-        }
-    }
-
-    None
+fn parse_color_from_attrs(attributes: &Attributes, palette: ColorPalette<'_>) -> Option<Color> {
+    let attrs: Vec<_> = attributes.clone().flatten().collect();
+    style_parser::parse_color_with_theme(&attrs, palette.theme, palette.indexed)
+        .ok()
+        .flatten()
 }
 
 /// An enum for Xlsx specific errors.
@@ -2225,8 +2165,11 @@ impl<RS: Read + Seek> Xlsx<RS> {
         let strings = &self.strings;
         let formats = &self.formats;
         let styles = &self.styles;
-        let theme = self.theme.as_ref();
-        XlsxWorksheetItemReader::new(xml, strings, formats, styles, theme, is_1904)
+        let palette = ColorPalette {
+            theme: self.theme.as_ref(),
+            indexed: self.indexed_colors.as_deref(),
+        };
+        XlsxWorksheetItemReader::new_with_palette(xml, strings, formats, styles, palette, is_1904)
     }
 
     /// Get the styles for a worksheet.
@@ -2292,8 +2235,13 @@ impl<RS: Read + Seek> Xlsx<RS> {
                         Ok(Event::Start(ref inner_e) | Event::Empty(ref inner_e))
                             if inner_e.local_name().as_ref() == b"tabColor" =>
                         {
-                            sheet_settings.tab_color =
-                                parse_color_from_attrs(&inner_e.attributes(), self.theme.as_ref());
+                            sheet_settings.tab_color = parse_color_from_attrs(
+                                &inner_e.attributes(),
+                                ColorPalette {
+                                    theme: self.theme.as_ref(),
+                                    indexed: self.indexed_colors.as_deref(),
+                                },
+                            );
                         }
                         Ok(Event::End(ref end_e)) if end_e.local_name().as_ref() == b"sheetPr" => {
                             break;
@@ -3089,8 +3037,13 @@ impl<RS: Read + Seek> Reader<RS> for Xlsx<RS> {
                         Ok(Event::Empty(ref tab_e))
                             if tab_e.local_name().as_ref() == b"tabColor" =>
                         {
-                            sheet_settings.tab_color =
-                                parse_color_from_attrs(&tab_e.attributes(), self.theme.as_ref());
+                            sheet_settings.tab_color = parse_color_from_attrs(
+                                &tab_e.attributes(),
+                                ColorPalette {
+                                    theme: self.theme.as_ref(),
+                                    indexed: self.indexed_colors.as_deref(),
+                                },
+                            );
                         }
                         Ok(Event::End(ref end_e)) if end_e.local_name().as_ref() == b"sheetPr" => {
                             break;
