@@ -1268,7 +1268,7 @@ fn parse_data_table_formula(e: &BytesStart<'_>) -> Result<DataTableFormula, Xlsx
 }
 
 /// read the contents of a <v> cell
-fn read_v<'s>(
+pub(super) fn read_v<'s>(
     v: &mut String,
     strings: &'s [String],
     cell_format: Option<&CellFormat>,

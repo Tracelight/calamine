@@ -8,16 +8,18 @@ use calamine::{
     open_workbook, open_workbook_auto, BorderStyle, CellFormula, Color, ConditionalFormatOperator,
     ConditionalFormatRuleType, ConditionalFormatTimePeriod, ConditionalFormatValueKind, DataRef,
     DataTableFormula, DataTableKind, DataTableOrientation, DataType, DefinedName, Dimensions,
-    ExcelDateTime, ExcelDateTimeType, HeaderRow, HorizontalAlignment, Ods, Range, Reader,
-    ReaderRef, Sheet, SheetType, SheetVisible, UnderlineStyle, VerticalAlignment, WorksheetItem,
-    Xls, Xlsb, Xlsx,
+    ExcelDateTime, ExcelDateTimeType, ExternalLinkItem, HeaderRow, HorizontalAlignment, Ods, Range,
+    Reader, ReaderRef, Sheet, SheetType, SheetVisible, UnderlineStyle, VerticalAlignment,
+    WorksheetItem, Xls, Xlsb, Xlsx,
 };
 use calamine::{CellErrorType::*, Data};
 use rstest::rstest;
 use std::collections::BTreeSet;
 use std::fs::File;
-use std::io::{BufReader, Cursor};
+use std::io::{BufReader, Cursor, Write};
 use std::sync::Once;
+use zip::write::SimpleFileOptions;
+use zip::ZipWriter;
 
 static INIT: Once = Once::new();
 
@@ -115,6 +117,139 @@ fn error_file() {
             [Error(Ref)],
             [Error(Num)],
             [Error(NA)]
+        ]
+    );
+}
+
+#[test]
+fn external_link_with_unavailable_source() {
+    let mut excel: Xlsx<_> = wb("errors.xlsx");
+    assert_eq!(excel.external_link_count(), 1);
+
+    let mut reader = excel.external_link_reader(1).unwrap();
+    let mut items = Vec::new();
+    while let Some(item) = reader.next_item().unwrap() {
+        match item {
+            ExternalLinkItem::Workbook { target } => {
+                items.push(format!("workbook {target}"));
+            }
+            ExternalLinkItem::SheetName { sheet_id, name } => {
+                items.push(format!("sheet {sheet_id} {name}"));
+            }
+            ExternalLinkItem::SheetData {
+                sheet_id,
+                refresh_error,
+            } => {
+                items.push(format!("data {sheet_id} refresh_error={refresh_error}"));
+            }
+            ExternalLinkItem::DefinedName(_)
+            | ExternalLinkItem::Cell { .. }
+            | ExternalLinkItem::Dde
+            | ExternalLinkItem::Ole => {}
+        }
+    }
+
+    assert_eq!(
+        items,
+        [
+            "workbook Feuil8",
+            "sheet 0 Feuil8",
+            "data 0 refresh_error=true"
+        ]
+    );
+}
+
+#[test]
+fn streams_external_link_cells_and_names_in_formula_index_order() {
+    let mut archive = ZipWriter::new(Cursor::new(Vec::new()));
+    let options = SimpleFileOptions::default();
+    let parts = [
+        (
+            "xl/workbook.xml",
+            r#"<workbook xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets/><externalReferences><externalReference r:id="second"/><externalReference r:id="first"/></externalReferences></workbook>"#,
+        ),
+        (
+            "xl/_rels/workbook.xml.rels",
+            r#"<Relationships><Relationship Id="first" Target="externalLinks/externalLink1.xml"/><Relationship Id="second" Target="externalLinks/externalLink2.xml"/></Relationships>"#,
+        ),
+        (
+            "xl/externalLinks/externalLink1.xml",
+            r#"<externalLink xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><externalBook r:id="source"><sheetNames><sheetName val="First"/></sheetNames></externalBook></externalLink>"#,
+        ),
+        (
+            "xl/externalLinks/_rels/externalLink1.xml.rels",
+            r#"<Relationships><Relationship Id="source" Target="first.xlsx" TargetMode="External"/></Relationships>"#,
+        ),
+        (
+            "xl/externalLinks/externalLink2.xml",
+            r#"<externalLink xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><externalBook r:id="source"><sheetNames><sheetName val="Cache"/></sheetNames><definedNames><definedName name="Rate" refersTo="Cache!$A$1"/><definedName name="Unresolved"/></definedNames><sheetDataSet><sheetData sheetId="0"><row r="1"><cell r="A1" t="n"><v>42.5</v></cell><cell r="C1" t="str"><v>hello</v></cell><cell r="D1" t="b"><v>1</v></cell><cell r="E1" t="e"><v>#N/A</v></cell><cell r="F1"/></row></sheetData></sheetDataSet></externalBook></externalLink>"#,
+        ),
+        (
+            "xl/externalLinks/_rels/externalLink2.xml.rels",
+            r#"<Relationships><Relationship Id="source" Target="../source &amp; data.xlsx" TargetMode="External"/></Relationships>"#,
+        ),
+    ];
+    for (path, contents) in parts {
+        archive.start_file(path, options).unwrap();
+        archive.write_all(contents.as_bytes()).unwrap();
+    }
+    let bytes = archive.finish().unwrap().into_inner();
+    let mut excel = Xlsx::new(Cursor::new(bytes)).unwrap();
+
+    assert_eq!(excel.external_link_count(), 2);
+    {
+        let mut reader = excel.external_link_reader(1).unwrap();
+        assert!(matches!(
+            reader.next_item().unwrap(),
+            Some(ExternalLinkItem::Workbook { target }) if target == "../source & data.xlsx"
+        ));
+    }
+    {
+        let mut reader = excel.external_link_reader(2).unwrap();
+        assert!(matches!(
+            reader.next_item().unwrap(),
+            Some(ExternalLinkItem::Workbook { target }) if target == "first.xlsx"
+        ));
+    }
+
+    let mut reader = excel.external_link_reader(1).unwrap();
+    let mut cells = Vec::new();
+    let mut defined_names = Vec::new();
+    while let Some(item) = reader.next_item().unwrap() {
+        match item {
+            ExternalLinkItem::DefinedName(name) => defined_names.push(name),
+            ExternalLinkItem::Cell { sheet_id, cell } => {
+                assert_eq!(sheet_id, 0);
+                cells.push((cell.get_position(), cell.get_value().clone()));
+            }
+            _ => {}
+        }
+    }
+    assert!(reader.next_item().unwrap().is_none());
+
+    assert_eq!(
+        defined_names,
+        [
+            calamine::ExternalDefinedName {
+                name: "Rate".to_string(),
+                refers_to: Some("Cache!$A$1".to_string()),
+                sheet_id: None,
+            },
+            calamine::ExternalDefinedName {
+                name: "Unresolved".to_string(),
+                refers_to: None,
+                sheet_id: None,
+            },
+        ]
+    );
+    assert_eq!(
+        cells,
+        [
+            ((0, 0), DataRef::Float(42.5)),
+            ((0, 2), DataRef::String("hello".to_string())),
+            ((0, 3), DataRef::Bool(true)),
+            ((0, 4), DataRef::Error(NA)),
+            ((0, 5), DataRef::Empty),
         ]
     );
 }
