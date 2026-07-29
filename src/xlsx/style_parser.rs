@@ -790,7 +790,18 @@ pub fn parse_font_with_theme<RS: BufRead>(
                     font = font.with_underline(underline_style);
                 }
                 b"strike" => {
-                    font = font.with_strikethrough(true);
+                    // CT_BooleanProperty: absent `val` defaults to true;
+                    // `<strike val="0"/>` explicitly disables strikethrough.
+                    let mut strikethrough = true;
+                    for attr in e.attributes() {
+                        let attr = attr?;
+                        if attr.key.as_ref() == b"val" {
+                            let val_str = String::from_utf8_lossy(&attr.value);
+                            strikethrough = !matches!(val_str.as_ref(), "0" | "false");
+                            break;
+                        }
+                    }
+                    font = font.with_strikethrough(strikethrough);
                 }
                 b"color" => {
                     if let Some((color, from_theme)) = parse_color_with_source(
@@ -1126,5 +1137,38 @@ fn read_string<RS: BufRead>(
         Ok(None)
     } else {
         Ok(Some(content))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse_font_xml(xml: &str) -> Font {
+        let mut reader = Reader::from_str(xml);
+        reader.config_mut().expand_empty_elements = true;
+        let mut buf = Vec::new();
+        let start = match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(e)) => e.into_owned(),
+            other => panic!("expected font start element, got {other:?}"),
+        };
+        parse_font_with_theme(&mut reader, &start, None, None).unwrap()
+    }
+
+    #[test]
+    fn strike_without_val_is_strikethrough() {
+        assert!(parse_font_xml("<font><strike/></font>").has_strikethrough());
+    }
+
+    #[test]
+    fn strike_val_zero_is_not_strikethrough() {
+        assert!(!parse_font_xml(r#"<font><strike val="0"/></font>"#).has_strikethrough());
+        assert!(!parse_font_xml(r#"<font><strike val="false"/></font>"#).has_strikethrough());
+    }
+
+    #[test]
+    fn strike_val_one_is_strikethrough() {
+        assert!(parse_font_xml(r#"<font><strike val="1"/></font>"#).has_strikethrough());
+        assert!(parse_font_xml(r#"<font><strike val="true"/></font>"#).has_strikethrough());
     }
 }
