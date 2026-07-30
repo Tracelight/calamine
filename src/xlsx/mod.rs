@@ -8,6 +8,7 @@ mod cells_reader;
 mod charts;
 mod comments;
 mod conditional_format;
+mod external_links;
 mod style_parser;
 mod theme;
 
@@ -46,6 +47,7 @@ pub use comments::{
     Comment, LegacyCommentsMap, Person, PersonsMap, RichTextRun, ThreadedComment,
     ThreadedCommentsMap,
 };
+pub use external_links::{ExternalDefinedName, ExternalLinkItem, XlsxExternalLinkReader};
 
 pub(crate) type XlReader<'a, RS> = XmlReader<BufReader<ZipFile<'a, RS>>>;
 
@@ -187,6 +189,9 @@ pub enum XlsxError {
     /// Specified worksheet was not found.
     WorksheetNotFound(String),
 
+    /// The requested external-link formula index does not identify an external-link part.
+    ExternalLinkNotFound(u32),
+
     /// Specified worksheet Table was not found.
     TableNotFound(String),
 
@@ -246,6 +251,9 @@ impl std::fmt::Display for XlsxError {
             XlsxError::Unrecognized { typ, val } => write!(f, "Unrecognized {typ}: {val}"),
             XlsxError::CellError(e) => write!(f, "Unsupported cell error value '{e}'"),
             XlsxError::WorksheetNotFound(n) => write!(f, "Worksheet '{n}' not found"),
+            XlsxError::ExternalLinkNotFound(index) => {
+                write!(f, "External link formula index '{index}' not found")
+            }
             XlsxError::Password => write!(f, "Workbook is password protected"),
             XlsxError::TableNotFound(n) => write!(f, "Table '{n}' not found"),
             XlsxError::NotAWorksheet(typ) => write!(f, "Expecting a worksheet, got {typ}"),
@@ -296,6 +304,8 @@ pub struct Xlsx<RS> {
     strings: Vec<String>,
     /// Sheets paths
     sheets: Vec<(String, String)>,
+    // External-link part paths in formula index order
+    external_links: Vec<String>,
     /// Tables: Name, Sheet, Columns, Data dimensions
     tables: Tables,
     /// Cell (number) formats
@@ -341,6 +351,44 @@ struct XlsxOptions {
 }
 
 impl<RS: Read + Seek> Xlsx<RS> {
+    /// Returns the number of available 1-based external-link formula indices.
+    pub fn external_link_count(&self) -> usize {
+        self.external_links.len()
+    }
+
+    /// Opens a streaming reader for a 1-based external workbook formula index.
+    pub fn external_link_reader(
+        &mut self,
+        formula_index: u32,
+    ) -> Result<XlsxExternalLinkReader<'_, RS>, XlsxError> {
+        let path = self
+            .external_links
+            .get(
+                formula_index
+                    .checked_sub(1)
+                    .ok_or(XlsxError::ExternalLinkNotFound(formula_index))?
+                    as usize,
+            )
+            .ok_or(XlsxError::ExternalLinkNotFound(formula_index))?
+            .clone();
+        let slash = path
+            .rfind('/')
+            .ok_or(XlsxError::Unexpected("external link part has no parent"))?;
+        let (folder, file_name) = path.split_at(slash);
+        let relationships_path = format!("{folder}/_rels{file_name}.rels");
+        let relationships = match xml_reader(&mut self.zip, &relationships_path) {
+            Some(xml) => external_links::read_external_relationships(xml?)?,
+            None => BTreeMap::new(),
+        };
+        let xml = xml_reader(&mut self.zip, &path)
+            .ok_or_else(|| XlsxError::FileNotFound(path.clone()))??;
+        Ok(XlsxExternalLinkReader::new(
+            xml,
+            &self.strings,
+            relationships,
+        ))
+    }
+
     fn read_shared_strings(&mut self) -> Result<(), XlsxError> {
         let mut xml = match xml_reader(&mut self.zip, "xl/sharedStrings.xml") {
             None => return Ok(()),
@@ -1114,6 +1162,18 @@ impl<RS: Read + Seek> Xlsx<RS> {
                         ),
                         None => false,
                     };
+                }
+                Ok(Event::Start(e)) if e.local_name().as_ref() == b"externalReference" => {
+                    for attribute in e.attributes() {
+                        let attribute = attribute?;
+                        if matches!(attribute.key, QName(b"r:id") | QName(b"relationships:id")) {
+                            let relationship = relationships
+                                .get(attribute.value.as_ref())
+                                .ok_or(XlsxError::RelationshipNotFound)?;
+                            self.external_links
+                                .push(normalize_relationship_target(&relationship.target));
+                        }
+                    }
                 }
                 Ok(Event::Start(e)) if e.local_name().as_ref() == b"definedName" => {
                     let mut name = None;
@@ -2915,6 +2975,7 @@ impl<RS: Read + Seek> Reader<RS> for Xlsx<RS> {
             styles: Vec::new(),
             is_1904: false,
             sheets: Vec::new(),
+            external_links: Vec::new(),
             tables: None,
             metadata: Metadata::default(),
             #[cfg(feature = "picture")]
@@ -4873,6 +4934,7 @@ mod tests {
             zip,
             strings: vec![],
             sheets: vec![],
+            external_links: vec![],
             tables: None,
             formats: vec![],
             styles: Vec::new(),
