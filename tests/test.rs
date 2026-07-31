@@ -122,6 +122,41 @@ fn error_file() {
 }
 
 #[test]
+fn unrecognized_xlsx_error_does_not_abort_worksheet() {
+    let mut archive = ZipWriter::new(Cursor::new(Vec::new()));
+    let options = SimpleFileOptions::default();
+    let parts = [
+        (
+            "xl/workbook.xml",
+            r#"<workbook xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Sheet1" sheetId="1" r:id="sheet1"/></sheets></workbook>"#,
+        ),
+        (
+            "xl/_rels/workbook.xml.rels",
+            r#"<Relationships><Relationship Id="sheet1" Target="worksheets/sheet1.xml"/></Relationships>"#,
+        ),
+        (
+            "xl/worksheets/sheet1.xml",
+            r#"<worksheet><sheetData><row r="1"><c r="A1" t="e"><v>#FUTURE!</v></c><c r="B1" t="str"><v>after</v></c></row></sheetData></worksheet>"#,
+        ),
+    ];
+    for (path, contents) in parts {
+        archive.start_file(path, options).unwrap();
+        archive.write_all(contents.as_bytes()).unwrap();
+    }
+    let bytes = archive.finish().unwrap().into_inner();
+    let mut excel = Xlsx::new(Cursor::new(bytes)).unwrap();
+
+    let range = excel.worksheet_range("Sheet1").unwrap();
+    range_eq!(
+        range,
+        [[
+            Error(Unrecognized("#FUTURE!".to_string())),
+            String("after".to_string())
+        ]]
+    );
+}
+
+#[test]
 fn external_link_with_unavailable_source() {
     let mut excel: Xlsx<_> = wb("errors.xlsx");
     assert_eq!(excel.external_link_count(), 1);

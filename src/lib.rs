@@ -137,8 +137,13 @@ use crate::vba::VbaProject;
 /// a value in a worksheet cell
 #[derive(Debug, Clone, PartialEq)]
 pub enum CellErrorType {
+    Blocked,
+    Busy,
+    Calc,
+    Connect,
     /// Division by 0 error
     Div0,
+    Field,
     /// Unavailable value error
     NA,
     /// Invalid name error
@@ -147,25 +152,41 @@ pub enum CellErrorType {
     Null,
     /// Number error
     Num,
+    Python,
     /// Invalid cell reference error
     Ref,
+    Spill,
+    Timeout,
+    Unknown,
     /// Value error
     Value,
     /// Getting data
     GettingData,
+    /// An unrecognised error token, preserved verbatim.
+    Unrecognized(String),
 }
 
 impl fmt::Display for CellErrorType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
-        match *self {
+        match self {
+            CellErrorType::Blocked => write!(f, "#BLOCKED!"),
+            CellErrorType::Busy => write!(f, "#BUSY!"),
+            CellErrorType::Calc => write!(f, "#CALC!"),
+            CellErrorType::Connect => write!(f, "#CONNECT!"),
             CellErrorType::Div0 => write!(f, "#DIV/0!"),
+            CellErrorType::Field => write!(f, "#FIELD!"),
             CellErrorType::NA => write!(f, "#N/A"),
             CellErrorType::Name => write!(f, "#NAME?"),
             CellErrorType::Null => write!(f, "#NULL!"),
             CellErrorType::Num => write!(f, "#NUM!"),
+            CellErrorType::Python => write!(f, "#PYTHON!"),
             CellErrorType::Ref => write!(f, "#REF!"),
+            CellErrorType::Spill => write!(f, "#SPILL!"),
+            CellErrorType::Timeout => write!(f, "#TIMEOUT!"),
+            CellErrorType::Unknown => write!(f, "#UNKNOWN!"),
             CellErrorType::Value => write!(f, "#VALUE!"),
-            CellErrorType::GettingData => write!(f, "#DATA!"),
+            CellErrorType::GettingData => write!(f, "#GETTING_DATA"),
+            CellErrorType::Unrecognized(error) => write!(f, "{error}"),
         }
     }
 }
