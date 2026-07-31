@@ -282,14 +282,24 @@ impl FromStr for CellErrorType {
     type Err = XlsxError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
+            "#BLOCKED!" => Ok(CellErrorType::Blocked),
+            "#BUSY!" => Ok(CellErrorType::Busy),
+            "#CALC!" => Ok(CellErrorType::Calc),
+            "#CONNECT!" => Ok(CellErrorType::Connect),
             "#DIV/0!" => Ok(CellErrorType::Div0),
+            "#FIELD!" => Ok(CellErrorType::Field),
             "#N/A" => Ok(CellErrorType::NA),
             "#NAME?" => Ok(CellErrorType::Name),
             "#NULL!" => Ok(CellErrorType::Null),
             "#NUM!" => Ok(CellErrorType::Num),
+            "#PYTHON!" => Ok(CellErrorType::Python),
             "#REF!" => Ok(CellErrorType::Ref),
+            "#SPILL!" => Ok(CellErrorType::Spill),
+            "#TIMEOUT!" => Ok(CellErrorType::Timeout),
+            "#UNKNOWN!" => Ok(CellErrorType::Unknown),
             "#VALUE!" => Ok(CellErrorType::Value),
-            _ => Err(XlsxError::CellError(s.into())),
+            "#GETTING_DATA" => Ok(CellErrorType::GettingData),
+            _ => Ok(CellErrorType::Unrecognized(s.into())),
         }
     }
 }
@@ -4526,6 +4536,28 @@ mod tests {
             CellErrorType::from_str("#VALUE!").unwrap(),
             CellErrorType::Value
         );
+        for (token, error) in [
+            ("#BLOCKED!", CellErrorType::Blocked),
+            ("#BUSY!", CellErrorType::Busy),
+            ("#CALC!", CellErrorType::Calc),
+            ("#CONNECT!", CellErrorType::Connect),
+            ("#FIELD!", CellErrorType::Field),
+            ("#PYTHON!", CellErrorType::Python),
+            ("#SPILL!", CellErrorType::Spill),
+            ("#TIMEOUT!", CellErrorType::Timeout),
+            ("#UNKNOWN!", CellErrorType::Unknown),
+            ("#GETTING_DATA", CellErrorType::GettingData),
+        ] {
+            assert_eq!(CellErrorType::from_str(token).unwrap(), error);
+            assert_eq!(error.to_string(), token);
+        }
+
+        let unrecognized = CellErrorType::from_str("#FUTURE!").unwrap();
+        assert_eq!(
+            unrecognized,
+            CellErrorType::Unrecognized("#FUTURE!".to_string())
+        );
+        assert_eq!(unrecognized.to_string(), "#FUTURE!");
     }
 
     #[test]
