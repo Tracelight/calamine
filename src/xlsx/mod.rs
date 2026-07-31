@@ -47,7 +47,10 @@ pub use comments::{
     Comment, LegacyCommentsMap, Person, PersonsMap, RichTextRun, ThreadedComment,
     ThreadedCommentsMap,
 };
-pub use external_links::{ExternalDefinedName, ExternalLinkItem, XlsxExternalLinkReader};
+pub use external_links::{
+    ExternalDefinedName, ExternalLinkItem, ExternalWorkbookIdentity, ExternalWorkbookRelationship,
+    ExternalWorkbookRelationshipKind, XlsxExternalLinkReader,
+};
 
 pub(crate) type XlReader<'a, RS> = XmlReader<BufReader<ZipFile<'a, RS>>>;
 

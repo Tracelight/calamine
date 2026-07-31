@@ -26,14 +26,42 @@ pub struct ExternalDefinedName {
     pub sheet_id: Option<u32>,
 }
 
+/// A relationship locating the workbook that supplies an external link.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExternalWorkbookRelationship {
+    /// The OOXML element that supplies this location.
+    pub kind: ExternalWorkbookRelationshipKind,
+    /// The path or URI stored in the relationship.
+    pub target: String,
+}
+
+/// Distinguishes the primary relationship from `alternateUrls` relationships.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExternalWorkbookRelationshipKind {
+    /// The source workbook referenced directly by `externalBook`.
+    Primary,
+    /// The `absoluteUrl` relationship in an `alternateUrls` extension.
+    AbsoluteUrl,
+    /// The `relativeUrl` relationship in an `alternateUrls` extension.
+    RelativeUrl,
+}
+
+/// Stable cloud-storage identifiers for an external workbook.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExternalWorkbookIdentity {
+    /// The raw `alternateUrls` `driveId` attribute, or `None` when absent.
+    pub drive_id: Option<String>,
+    /// The raw `alternateUrls` `itemId` attribute, or `None` when absent.
+    pub item_id: Option<String>,
+}
+
 /// Metadata and cached values emitted from an external-link part.
 #[derive(Debug, Clone)]
 pub enum ExternalLinkItem<'a> {
-    /// The relationship target of a supporting workbook.
-    Workbook {
-        /// The path or URI stored in the external-link relationship.
-        target: String,
-    },
+    /// An OOXML relationship locating the supporting workbook.
+    WorkbookRelationship(ExternalWorkbookRelationship),
+    /// Stable cloud-storage identifiers from an `alternateUrls` extension.
+    WorkbookIdentity(ExternalWorkbookIdentity),
     /// A sheet name from the supporting workbook, in workbook order.
     SheetName {
         /// The zero-based position in the external workbook's sheet-name list.
@@ -73,6 +101,7 @@ where
     relationships: BTreeMap<Vec<u8>, ExternalRelationship>,
     sheet_name_index: u32,
     sheet_id: Option<u32>,
+    in_alternate_urls: bool,
     done: bool,
     buf: Vec<u8>,
     cell_buf: Vec<u8>,
@@ -94,6 +123,7 @@ where
             relationships,
             sheet_name_index: 0,
             sheet_id: None,
+            in_alternate_urls: false,
             done: false,
             buf: Vec::with_capacity(1024),
             cell_buf: Vec::with_capacity(1024),
@@ -112,15 +142,33 @@ where
             match self.xml.read_event_into(&mut self.buf) {
                 Ok(Event::Start(e)) => match e.local_name().as_ref() {
                     b"externalBook" => {
-                        let relationship_id =
-                            relationship_id(&e)?.ok_or(XlsxError::RelationshipNotFound)?;
-                        let target = self
-                            .relationships
-                            .get(&relationship_id)
-                            .ok_or(XlsxError::RelationshipNotFound)?
-                            .target
-                            .clone();
-                        return Ok(Some(ExternalLinkItem::Workbook { target }));
+                        return workbook_relationship(
+                            &self.relationships,
+                            &e,
+                            ExternalWorkbookRelationshipKind::Primary,
+                        );
+                    }
+                    b"alternateUrls" => {
+                        self.in_alternate_urls = true;
+                        let drive_id = optional_attribute(&e, b"driveId", &self.xml)?;
+                        let item_id = optional_attribute(&e, b"itemId", &self.xml)?;
+                        return Ok(Some(ExternalLinkItem::WorkbookIdentity(
+                            ExternalWorkbookIdentity { drive_id, item_id },
+                        )));
+                    }
+                    b"absoluteUrl" if self.in_alternate_urls => {
+                        return workbook_relationship(
+                            &self.relationships,
+                            &e,
+                            ExternalWorkbookRelationshipKind::AbsoluteUrl,
+                        );
+                    }
+                    b"relativeUrl" if self.in_alternate_urls => {
+                        return workbook_relationship(
+                            &self.relationships,
+                            &e,
+                            ExternalWorkbookRelationshipKind::RelativeUrl,
+                        );
                     }
                     b"sheetName" => {
                         let name = required_attribute(&e, b"val", &self.xml)?;
@@ -169,6 +217,9 @@ where
                 Ok(Event::End(e)) if e.local_name().as_ref() == b"sheetData" => {
                     self.sheet_id = None;
                 }
+                Ok(Event::End(e)) if e.local_name().as_ref() == b"alternateUrls" => {
+                    self.in_alternate_urls = false;
+                }
                 Ok(Event::End(e)) if e.local_name().as_ref() == b"externalLink" => {
                     self.done = true;
                     return Ok(None);
@@ -179,6 +230,22 @@ where
             }
         }
     }
+}
+
+fn workbook_relationship<'a>(
+    relationships: &BTreeMap<Vec<u8>, ExternalRelationship>,
+    e: &BytesStart<'_>,
+    kind: ExternalWorkbookRelationshipKind,
+) -> Result<Option<ExternalLinkItem<'a>>, XlsxError> {
+    let relationship_id = relationship_id(e)?.ok_or(XlsxError::RelationshipNotFound)?;
+    let target = relationships
+        .get(&relationship_id)
+        .ok_or(XlsxError::RelationshipNotFound)?
+        .target
+        .clone();
+    Ok(Some(ExternalLinkItem::WorkbookRelationship(
+        ExternalWorkbookRelationship { kind, target },
+    )))
 }
 
 pub(super) fn read_external_relationships<RS>(

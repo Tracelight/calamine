@@ -130,8 +130,11 @@ fn external_link_with_unavailable_source() {
     let mut items = Vec::new();
     while let Some(item) = reader.next_item().unwrap() {
         match item {
-            ExternalLinkItem::Workbook { target } => {
-                items.push(format!("workbook {target}"));
+            ExternalLinkItem::WorkbookRelationship(relationship) => {
+                items.push(format!(
+                    "workbook {:?} {}",
+                    relationship.kind, relationship.target
+                ));
             }
             ExternalLinkItem::SheetName { sheet_id, name } => {
                 items.push(format!("sheet {sheet_id} {name}"));
@@ -142,7 +145,8 @@ fn external_link_with_unavailable_source() {
             } => {
                 items.push(format!("data {sheet_id} refresh_error={refresh_error}"));
             }
-            ExternalLinkItem::DefinedName(_)
+            ExternalLinkItem::WorkbookIdentity(_)
+            | ExternalLinkItem::DefinedName(_)
             | ExternalLinkItem::Cell { .. }
             | ExternalLinkItem::Dde
             | ExternalLinkItem::Ole => {}
@@ -152,7 +156,7 @@ fn external_link_with_unavailable_source() {
     assert_eq!(
         items,
         [
-            "workbook Feuil8",
+            "workbook Primary Feuil8",
             "sheet 0 Feuil8",
             "data 0 refresh_error=true"
         ]
@@ -160,7 +164,7 @@ fn external_link_with_unavailable_source() {
 }
 
 #[test]
-fn streams_external_link_cells_and_names_in_formula_index_order() {
+fn streams_external_link_items_in_formula_index_and_document_order() {
     let mut archive = ZipWriter::new(Cursor::new(Vec::new()));
     let options = SimpleFileOptions::default();
     let parts = [
@@ -174,7 +178,7 @@ fn streams_external_link_cells_and_names_in_formula_index_order() {
         ),
         (
             "xl/externalLinks/externalLink1.xml",
-            r#"<externalLink xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><externalBook r:id="source"><sheetNames><sheetName val="First"/></sheetNames></externalBook></externalLink>"#,
+            r#"<externalLink xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:el="http://schemas.microsoft.com/office/spreadsheetml/2021/extlinks2021"><externalBook r:id="source"><sheetNames><sheetName val="First"/></sheetNames><extLst><ext><el:alternateUrls/></ext></extLst></externalBook></externalLink>"#,
         ),
         (
             "xl/externalLinks/_rels/externalLink1.xml.rels",
@@ -182,11 +186,11 @@ fn streams_external_link_cells_and_names_in_formula_index_order() {
         ),
         (
             "xl/externalLinks/externalLink2.xml",
-            r#"<externalLink xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><externalBook r:id="source"><sheetNames><sheetName val="Cache"/></sheetNames><definedNames><definedName name="Rate" refersTo="Cache!$A$1"/><definedName name="Unresolved"/></definedNames><sheetDataSet><sheetData sheetId="0"><row r="1"><cell r="A1" t="n"><v>42.5</v></cell><cell r="C1" t="str"><v>hello</v></cell><cell r="D1" t="b"><v>1</v></cell><cell r="E1" t="e"><v>#N/A</v></cell><cell r="F1"/></row></sheetData></sheetDataSet></externalBook></externalLink>"#,
+            r#"<externalLink xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:el="http://schemas.microsoft.com/office/spreadsheetml/2021/extlinks2021" xmlns:other="urn:unrelated"><externalBook r:id="source"><sheetNames><sheetName val="Cache"/></sheetNames><definedNames><definedName name="Rate" refersTo="Cache!$A$1"/><definedName name="Unresolved"/></definedNames><sheetDataSet><sheetData sheetId="0"><row r="1"><cell r="A1" t="n"><v>42.5</v></cell><cell r="C1" t="str"><v>hello</v></cell><cell r="D1" t="b"><v>1</v></cell><cell r="E1" t="e"><v>#N/A</v></cell><cell r="F1"/></row></sheetData></sheetDataSet><extLst><ext><other:absoluteUrl r:id="absolute"/></ext><ext><el:alternateUrls driveId="drive &amp; one" itemId="item &amp; two"><el:absoluteUrl r:id="absolute"/><el:relativeUrl r:id="relative"/></el:alternateUrls></ext></extLst></externalBook></externalLink>"#,
         ),
         (
             "xl/externalLinks/_rels/externalLink2.xml.rels",
-            r#"<Relationships><Relationship Id="source" Target="../source &amp; data.xlsx" TargetMode="External"/></Relationships>"#,
+            r#"<Relationships><Relationship Id="source" Target="../source &amp; data.xlsx" TargetMode="External"/><Relationship Id="absolute" Target="https://example.test/Shared%20Files/source.xlsx?x=1&amp;y=2" TargetMode="External"/><Relationship Id="relative" Target="../Shared &amp; Current/source.xlsx" TargetMode="External"/></Relationships>"#,
         ),
     ];
     for (path, contents) in parts {
@@ -198,58 +202,88 @@ fn streams_external_link_cells_and_names_in_formula_index_order() {
 
     assert_eq!(excel.external_link_count(), 2);
     {
-        let mut reader = excel.external_link_reader(1).unwrap();
-        assert!(matches!(
-            reader.next_item().unwrap(),
-            Some(ExternalLinkItem::Workbook { target }) if target == "../source & data.xlsx"
-        ));
-    }
-    {
         let mut reader = excel.external_link_reader(2).unwrap();
-        assert!(matches!(
-            reader.next_item().unwrap(),
-            Some(ExternalLinkItem::Workbook { target }) if target == "first.xlsx"
-        ));
+        let mut items = Vec::new();
+        while let Some(item) = reader.next_item().unwrap() {
+            match item {
+                ExternalLinkItem::WorkbookRelationship(relationship) => items.push(format!(
+                    "relationship {:?} {}",
+                    relationship.kind, relationship.target
+                )),
+                ExternalLinkItem::WorkbookIdentity(identity) => items.push(format!(
+                    "identity drive={:?} item={:?}",
+                    identity.drive_id, identity.item_id
+                )),
+                ExternalLinkItem::SheetName { sheet_id, name } => {
+                    items.push(format!("sheet {sheet_id} {name}"));
+                }
+                _ => unreachable!(),
+            }
+        }
+        assert_eq!(
+            items,
+            [
+                "relationship Primary first.xlsx",
+                "sheet 0 First",
+                "identity drive=None item=None",
+            ]
+        );
     }
 
     let mut reader = excel.external_link_reader(1).unwrap();
-    let mut cells = Vec::new();
-    let mut defined_names = Vec::new();
+    let mut event_order = Vec::new();
     while let Some(item) = reader.next_item().unwrap() {
         match item {
-            ExternalLinkItem::DefinedName(name) => defined_names.push(name),
-            ExternalLinkItem::Cell { sheet_id, cell } => {
-                assert_eq!(sheet_id, 0);
-                cells.push((cell.get_position(), cell.get_value().clone()));
+            ExternalLinkItem::WorkbookRelationship(relationship) => event_order.push(format!(
+                "relationship {:?} {}",
+                relationship.kind, relationship.target
+            )),
+            ExternalLinkItem::WorkbookIdentity(identity) => event_order.push(format!(
+                "identity drive={:?} item={:?}",
+                identity.drive_id, identity.item_id
+            )),
+            ExternalLinkItem::SheetName { sheet_id, name } => {
+                event_order.push(format!("sheet {sheet_id} {name}"));
             }
-            _ => {}
+            ExternalLinkItem::DefinedName(name) => {
+                event_order.push(format!(
+                    "name {} refers_to={:?} sheet_id={:?}",
+                    name.name, name.refers_to, name.sheet_id
+                ));
+            }
+            ExternalLinkItem::SheetData {
+                sheet_id,
+                refresh_error,
+            } => event_order.push(format!("data {sheet_id} refresh_error={refresh_error}")),
+            ExternalLinkItem::Cell { sheet_id, cell } => {
+                event_order.push(format!(
+                    "cell sheet={sheet_id} position={:?} value={:?}",
+                    cell.get_position(),
+                    cell.get_value()
+                ));
+            }
+            ExternalLinkItem::Dde => event_order.push("dde".to_string()),
+            ExternalLinkItem::Ole => event_order.push("ole".to_string()),
         }
     }
     assert!(reader.next_item().unwrap().is_none());
 
     assert_eq!(
-        defined_names,
+        event_order,
         [
-            calamine::ExternalDefinedName {
-                name: "Rate".to_string(),
-                refers_to: Some("Cache!$A$1".to_string()),
-                sheet_id: None,
-            },
-            calamine::ExternalDefinedName {
-                name: "Unresolved".to_string(),
-                refers_to: None,
-                sheet_id: None,
-            },
-        ]
-    );
-    assert_eq!(
-        cells,
-        [
-            ((0, 0), DataRef::Float(42.5)),
-            ((0, 2), DataRef::String("hello".to_string())),
-            ((0, 3), DataRef::Bool(true)),
-            ((0, 4), DataRef::Error(NA)),
-            ((0, 5), DataRef::Empty),
+            "relationship Primary ../source & data.xlsx",
+            "sheet 0 Cache",
+            "name Rate refers_to=Some(\"Cache!$A$1\") sheet_id=None",
+            "name Unresolved refers_to=None sheet_id=None",
+            "data 0 refresh_error=false",
+            "cell sheet=0 position=(0, 0) value=Float(42.5)",
+            "cell sheet=0 position=(0, 2) value=String(\"hello\")",
+            "cell sheet=0 position=(0, 3) value=Bool(true)",
+            "cell sheet=0 position=(0, 4) value=Error(NA)",
+            "cell sheet=0 position=(0, 5) value=Empty",
+            "identity drive=Some(\"drive & one\") item=Some(\"item & two\")",
+            "relationship AbsoluteUrl https://example.test/Shared%20Files/source.xlsx?x=1&y=2",
+            "relationship RelativeUrl ../Shared & Current/source.xlsx",
         ]
     );
 }
